@@ -3,24 +3,23 @@ READ BEFORE INSTALL - Open Anyway Guide
 English
 =======
 
-CodexUsage is not Apple-notarized yet, so macOS may block the app.
+CodexUsage is not Apple-notarized yet. macOS may show:
 
-Install:
-1. Open CodexUsage.dmg.
-2. Double-click CodexUsage.app.
-3. CodexUsage copies itself to ~/Applications and starts the installed app.
-4. If macOS blocks it, Control-click CodexUsage.app and choose Open.
-5. Click Open again when macOS asks.
+"CodexUsage" Not Opened
 
-If it is still blocked:
+If you see that message:
 1. Open System Settings.
 2. Go to Privacy & Security.
 3. Click Open Anyway for CodexUsage.
 4. Double-click CodexUsage.app again.
+5. Click Open if macOS asks one more time.
 
-What CodexUsage does on first launch:
+Normal install:
+1. Double-click CodexUsage.app.
+2. CodexUsage installs itself to ~/Applications and starts.
+
+CodexUsage also:
 - Copies itself to ~/Applications/CodexUsage.app.
-- Starts the installed app.
 - Creates a login item.
 - Links the CLI at ~/.codexusage/bin/codexusage.
 
@@ -29,24 +28,23 @@ CodexUsage does not edit your Codex config.toml or Codex status line.
 Korean / 한국어
 ===============
 
-CodexUsage는 아직 Apple notarization을 받지 않았기 때문에 macOS가 앱 실행을 막을 수 있습니다.
+CodexUsage는 아직 Apple notarization을 받지 않았습니다. macOS가 다음 메시지를 보여줄 수 있습니다.
 
-설치 방법:
-1. CodexUsage.dmg를 엽니다.
-2. CodexUsage.app을 더블클릭합니다.
-3. CodexUsage가 스스로 ~/Applications에 복사되고, 설치된 앱이 실행됩니다.
-4. macOS가 막으면 CodexUsage.app을 Control-클릭하고 열기를 선택합니다.
-5. macOS가 다시 묻는 경우 열기를 한 번 더 누릅니다.
+"CodexUsage" Not Opened
 
-그래도 막히는 경우:
+이 메시지가 나오면:
 1. 시스템 설정을 엽니다.
 2. 개인정보 보호 및 보안으로 이동합니다.
 3. CodexUsage의 그래도 열기를 누릅니다.
 4. CodexUsage.app을 다시 더블클릭합니다.
+5. macOS가 다시 묻는 경우 열기를 누릅니다.
 
-처음 실행할 때 CodexUsage가 하는 일:
+일반 설치:
+1. CodexUsage.app을 더블클릭합니다.
+2. CodexUsage가 ~/Applications에 설치되고 실행됩니다.
+
+CodexUsage가 추가로 하는 일:
 - 자신을 ~/Applications/CodexUsage.app으로 복사합니다.
-- 설치된 앱을 실행합니다.
 - 로그인 항목을 생성합니다.
 - CLI를 ~/.codexusage/bin/codexusage에 연결합니다.
 

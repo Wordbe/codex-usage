@@ -15,7 +15,7 @@ English README: [README.md](README.md) · [최신 DMG 다운로드](https://gith
 3. DMG 안의 `READ BEFORE INSTALL - Open Anyway Guide.txt`를 먼저 읽습니다.
 4. `CodexUsage.app`을 더블클릭합니다.
 
-macOS가 unsigned app을 막으면 `CodexUsage.app`을 Control-클릭하고 `열기`를 선택한 뒤 다시 `열기`를 누르세요. 그래도 막히면 **시스템 설정 > 개인정보 보호 및 보안**에서 CodexUsage의 **그래도 열기**를 누르세요.
+macOS가 `"CodexUsage" Not Opened`를 보여주면 **시스템 설정 > 개인정보 보호 및 보안**에서 CodexUsage의 **그래도 열기**를 누르고 `CodexUsage.app`을 다시 더블클릭하세요.
 
 DMG에서 처음 실행하면 CodexUsage가 스스로 `~/Applications/CodexUsage.app`로 복사되고 설치된 앱을 실행합니다. 로그인 항목을 만들고 CLI를 `~/.codexusage/bin/codexusage`에 연결합니다.
 

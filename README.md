@@ -23,7 +23,7 @@
 3. Read `READ BEFORE INSTALL - Open Anyway Guide.txt` inside the DMG.
 4. Double-click `CodexUsage.app`.
 
-If macOS blocks the unsigned app, Control-click `CodexUsage.app`, choose `Open`, then click `Open` again. If it still blocks, open **System Settings > Privacy & Security** and click **Open Anyway** for CodexUsage.
+If macOS shows `"CodexUsage" Not Opened`, open **System Settings > Privacy & Security**, click **Open Anyway** for CodexUsage, then double-click `CodexUsage.app` again.
 
 On first launch from the DMG, CodexUsage copies itself to `~/Applications/CodexUsage.app`, starts the installed copy, creates a login item, and links the CLI at `~/.codexusage/bin/codexusage`.
 
