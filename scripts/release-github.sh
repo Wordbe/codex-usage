@@ -40,7 +40,7 @@ cat > "${NOTES_FILE}" <<EOF
 - If macOS blocks the unsigned app, Control-click it and choose Open, or use System Settings > Privacy & Security > Open Anyway.
 - Does not edit Codex config.toml or the Codex status line.
 - Open source under the MIT License.
-- Unsigned DMG. See the included Gatekeeper Guide.
+- Unsigned DMG. See the included "READ BEFORE INSTALL - Open Anyway Guide.txt".
 EOF
 
 gh release create "${VERSION}" \

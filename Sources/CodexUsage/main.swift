@@ -992,7 +992,7 @@ final class MenuBarController: NSObject {
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r"))
         menu.addItem(.separator())
-        menu.addItem(actionItem(title: "Open Gatekeeper Guide", action: #selector(openGuide)))
+        menu.addItem(actionItem(title: "Open Install Guide", action: #selector(openGuide)))
         menu.addItem(actionItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
@@ -1021,15 +1021,15 @@ final class MenuBarController: NSObject {
 
     @objc private func openGuide() {
         let candidates = [
-            Bundle.main.resourceURL?.appendingPathComponent("Gatekeeper Guide.md"),
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("docs/GATEKEEPER.md")
+            Bundle.main.resourceURL?.appendingPathComponent("READ BEFORE INSTALL - Open Anyway Guide.txt"),
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("docs/OPEN_ANYWAY_GUIDE.txt")
         ].compactMap { $0 }
 
         for url in candidates where FileManager.default.fileExists(atPath: url.path) {
             NSWorkspace.shared.open(url)
             return
         }
-        showAlert(title: "Guide Not Found", message: "Gatekeeper Guide.md was not found in this build.")
+        showAlert(title: "Guide Not Found", message: "Install guide was not found in this build.")
     }
 
     @objc private func quit() {
