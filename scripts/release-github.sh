@@ -35,7 +35,7 @@ cat > "${NOTES_FILE}" <<EOF
 
 - macOS menu bar Codex 5-hour usage meter.
 - Uses Codex app-server rate-limit data with local caching under ~/.codexusage.
-- Includes a custom CodexUsage app icon and the SVG source inside the DMG.
+- Includes a custom CodexUsage app icon.
 - Download CodexUsage.dmg, open it, read "READ BEFORE INSTALL - Open Anyway Guide.txt", then double-click "CodexUsage.app".
 - The app self-installs to ~/Applications on first launch from the DMG.
 - If macOS blocks the unsigned app, Control-click it and choose Open, or use System Settings > Privacy & Security > Open Anyway.

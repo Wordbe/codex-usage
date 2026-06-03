@@ -68,13 +68,11 @@ cat > "${APP_DIR}/Contents/Info.plist" <<EOF
 EOF
 
 cp "${ROOT_DIR}/docs/OPEN_ANYWAY_GUIDE.txt" "${APP_DIR}/Contents/Resources/READ BEFORE INSTALL - Open Anyway Guide.txt"
-cp "${ICON_SVG}" "${APP_DIR}/Contents/Resources/CodexUsage Icon.svg"
 
 codesign --force --deep --sign - "${APP_DIR}"
 
 cp -R "${APP_DIR}" "${STAGE_DIR}/${APP_NAME}.app"
 cp "${ROOT_DIR}/docs/OPEN_ANYWAY_GUIDE.txt" "${STAGE_DIR}/READ BEFORE INSTALL - Open Anyway Guide.txt"
-cp "${ICON_SVG}" "${STAGE_DIR}/CodexUsage Icon.svg"
 
 rm -f "${DIST_DIR}/${DMG_NAME}"
 hdiutil create \
