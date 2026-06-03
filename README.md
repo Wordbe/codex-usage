@@ -9,8 +9,6 @@
 </p>
 
 <p align="center">
-  <a href="README.ko.md">Korean README</a>
-  ·
   <a href="https://github.com/Wordbe/codex-usage/releases/latest">Download latest DMG</a>
   ·
   <a href="LICENSE">MIT License</a>
