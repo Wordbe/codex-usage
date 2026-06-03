@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 
-let appVersion = "0.1.0"
+let appVersion = "0.1.1"
 let usageCacheMaxAge: TimeInterval = 30
 let usageSyncInterval: TimeInterval = 60
 let usageStaleFallbackMaxAge: TimeInterval = 6 * 60 * 60
@@ -877,6 +877,7 @@ final class MenuBarController: NSObject {
         }
         rebuildMenu()
         installLaunchAgentIfAppropriate()
+        installCLIHelperIfAppropriate()
         if let cached = usageService.cached() {
             latestSnapshot = cached.snapshot
             latestRead = cached
@@ -1050,8 +1051,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controller = MenuBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if installFromDiskImageIfNeeded() {
+            return
+        }
         controller.start()
     }
+}
+
+enum SelfInstallError: Error, CustomStringConvertible {
+    case appBundleNotFound
+    case install(String)
+    case launchFailed
+
+    var description: String {
+        switch self {
+        case .appBundleNotFound:
+            return "CodexUsage.app bundle was not found."
+        case .install(let message):
+            return message
+        case .launchFailed:
+            return "Installed CodexUsage.app, but could not launch it."
+        }
+    }
+}
+
+@MainActor
+func installFromDiskImageIfNeeded() -> Bool {
+    guard let sourceURL = currentAppBundleURL(),
+          sourceURL.path.hasPrefix("/Volumes/") else {
+        return false
+    }
+
+    do {
+        let targetURL = try installAppFromDiskImage(sourceURL: sourceURL)
+        guard NSWorkspace.shared.open(targetURL) else {
+            throw SelfInstallError.launchFailed
+        }
+        NSApplication.shared.terminate(nil)
+        return true
+    } catch {
+        let alert = NSAlert()
+        alert.messageText = "CodexUsage Install Failed"
+        alert.informativeText = String(describing: error)
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        NSApplication.shared.terminate(nil)
+        return true
+    }
+}
+
+func currentAppBundleURL() -> URL? {
+    let bundleURL = Bundle.main.bundleURL
+    return bundleURL.pathExtension == "app" ? bundleURL : nil
+}
+
+@MainActor
+func installAppFromDiskImage(sourceURL: URL) throws -> URL {
+    let fm = FileManager.default
+    let targetURL = URL(fileURLWithPath: "\(userHomeDirectory())/Applications/CodexUsage.app")
+    let targetParent = targetURL.deletingLastPathComponent()
+    let backupDir = URL(fileURLWithPath: "\(codexUsageRootDirectory())/backups/apps")
+
+    guard sourceURL.pathExtension == "app" else {
+        throw SelfInstallError.appBundleNotFound
+    }
+    guard targetURL.path.hasPrefix("\(userHomeDirectory())/Applications/") else {
+        throw SelfInstallError.install("Refusing to install to an unexpected path: \(targetURL.path)")
+    }
+
+    terminateOtherCodexUsageApps()
+
+    do {
+        try fm.createDirectory(at: targetParent, withIntermediateDirectories: true)
+        try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: codexUsageRootDirectory())
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: backupDir.path)
+
+        if fm.fileExists(atPath: targetURL.path) {
+            let backupURL = backupDir.appendingPathComponent("CodexUsage.app.\(timestampForFilename())")
+            try fm.copyItem(at: targetURL, to: backupURL)
+            try fm.removeItem(at: targetURL)
+        }
+
+        try fm.copyItem(at: sourceURL, to: targetURL)
+        _ = runSmallCommand("/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", targetURL.path], timeout: 5)
+        return targetURL
+    } catch {
+        throw SelfInstallError.install(error.localizedDescription)
+    }
+}
+
+@MainActor
+func terminateOtherCodexUsageApps() {
+    let currentPID = ProcessInfo.processInfo.processIdentifier
+    for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.ree.codexusage") {
+        guard app.processIdentifier != currentPID else { continue }
+        app.terminate()
+    }
+    Thread.sleep(forTimeInterval: 0.5)
 }
 
 func installLaunchAgentIfAppropriate() {
@@ -1095,6 +1193,36 @@ func installLaunchAgentIfAppropriate() {
     } catch {
         NSLog("CodexUsage failed to install launch agent: \(String(describing: error))")
     }
+}
+
+func installCLIHelperIfAppropriate() {
+    guard let executable = Bundle.main.executableURL?.path else { return }
+    if executable.hasPrefix("/Volumes/") {
+        return
+    }
+
+    let fm = FileManager.default
+    let root = codexUsageRootDirectory()
+    let binDir = "\(root)/bin"
+    let linkPath = "\(binDir)/codexusage"
+
+    do {
+        try fm.createDirectory(atPath: binDir, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binDir)
+        if fm.fileExists(atPath: linkPath) {
+            try fm.removeItem(atPath: linkPath)
+        }
+        try fm.createSymbolicLink(atPath: linkPath, withDestinationPath: executable)
+    } catch {
+        NSLog("CodexUsage failed to install CLI helper: \(String(describing: error))")
+    }
+}
+
+func timestampForFilename() -> String {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyyMMdd-HHmmss"
+    return formatter.string(from: Date())
 }
 
 func printUsageHelp() {

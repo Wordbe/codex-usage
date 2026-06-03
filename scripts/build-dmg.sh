@@ -2,13 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.1.1}"
 APP_NAME="CodexUsage"
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 BUILD_DIR="${ROOT_DIR}/.build/release"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_DIR="${DIST_DIR}/${APP_NAME}.app"
 STAGE_DIR="${DIST_DIR}/dmg-stage"
+ICON_SVG="${ROOT_DIR}/docs/assets/codexusage-icon.svg"
+ICONSET_DIR="${DIST_DIR}/${APP_NAME}.iconset"
 
 cd "${ROOT_DIR}"
 swift build -c release
@@ -18,6 +20,21 @@ mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${STAGE_DI
 
 cp "${BUILD_DIR}/codexusage" "${APP_DIR}/Contents/MacOS/codexusage"
 chmod +x "${APP_DIR}/Contents/MacOS/codexusage"
+
+rm -rf "${ICONSET_DIR}"
+mkdir -p "${ICONSET_DIR}"
+sips -s format png -z 16 16 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_16x16.png" >/dev/null
+sips -s format png -z 32 32 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_16x16@2x.png" >/dev/null
+sips -s format png -z 32 32 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_32x32.png" >/dev/null
+sips -s format png -z 64 64 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_32x32@2x.png" >/dev/null
+sips -s format png -z 128 128 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_128x128.png" >/dev/null
+sips -s format png -z 256 256 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_128x128@2x.png" >/dev/null
+sips -s format png -z 256 256 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_256x256.png" >/dev/null
+sips -s format png -z 512 512 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_256x256@2x.png" >/dev/null
+sips -s format png -z 512 512 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_512x512.png" >/dev/null
+sips -s format png -z 1024 1024 "${ICON_SVG}" --out "${ICONSET_DIR}/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "${ICONSET_DIR}" -o "${APP_DIR}/Contents/Resources/CodexUsage.icns"
+rm -rf "${ICONSET_DIR}"
 
 cat > "${APP_DIR}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -31,6 +48,10 @@ cat > "${APP_DIR}/Contents/Info.plist" <<EOF
     <key>CFBundleName</key>
     <string>CodexUsage</string>
     <key>CFBundleDisplayName</key>
+    <string>CodexUsage</string>
+    <key>CFBundleIconFile</key>
+    <string>CodexUsage</string>
+    <key>CFBundleIconName</key>
     <string>CodexUsage</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
@@ -48,68 +69,14 @@ EOF
 
 cp "${ROOT_DIR}/docs/GATEKEEPER.md" "${APP_DIR}/Contents/Resources/Gatekeeper Guide.md"
 cp "${ROOT_DIR}/docs/OPEN_ANYWAY_GUIDE.txt" "${APP_DIR}/Contents/Resources/READ BEFORE INSTALL - Open Anyway Guide.txt"
+cp "${ICON_SVG}" "${APP_DIR}/Contents/Resources/CodexUsage Icon.svg"
 
 codesign --force --deep --sign - "${APP_DIR}"
 
 cp -R "${APP_DIR}" "${STAGE_DIR}/${APP_NAME}.app"
 cp "${ROOT_DIR}/docs/GATEKEEPER.md" "${STAGE_DIR}/Gatekeeper Guide.md"
 cp "${ROOT_DIR}/docs/OPEN_ANYWAY_GUIDE.txt" "${STAGE_DIR}/READ BEFORE INSTALL - Open Anyway Guide.txt"
-
-cat > "${STAGE_DIR}/Install CodexUsage.command" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_SOURCE="${SOURCE_DIR}/CodexUsage.app"
-APP_TARGET="${HOME}/Applications/CodexUsage.app"
-CODEXUSAGE_HOME="${HOME}/.codexusage"
-BACKUP_DIR="${CODEXUSAGE_HOME}/backups/apps"
-BIN_DIR="${CODEXUSAGE_HOME}/bin"
-TS="$(date +%Y%m%d-%H%M%S)"
-
-if [[ ! -d "${APP_SOURCE}" ]]; then
-  echo "CodexUsage.app was not found next to this installer."
-  exit 1
-fi
-
-case "${APP_TARGET}" in
-  "${HOME}/Applications/CodexUsage.app") ;;
-  *)
-    echo "Refusing to install to an unexpected path: ${APP_TARGET}"
-    exit 1
-    ;;
-esac
-
-osascript -e 'tell application "CodexUsage" to quit' >/dev/null 2>&1 || true
-if pids=$(pgrep -f 'CodexUsage.app/Contents/MacOS/codexusage' 2>/dev/null); then
-  while read -r pid; do
-    [[ -n "${pid}" ]] && kill "${pid}" 2>/dev/null || true
-  done <<< "${pids}"
-fi
-
-mkdir -p "${HOME}/Applications" "${BACKUP_DIR}" "${BIN_DIR}"
-chmod 700 "${CODEXUSAGE_HOME}" "${BACKUP_DIR}" "${BIN_DIR}" 2>/dev/null || true
-if [[ -d "${APP_TARGET}" ]]; then
-  ditto "${APP_TARGET}" "${BACKUP_DIR}/CodexUsage.app.${TS}"
-fi
-if [[ -d "/Applications/CodexUsage.app" ]]; then
-  echo "Note: /Applications/CodexUsage.app exists and was left untouched."
-fi
-
-rm -rf "${APP_TARGET}"
-ditto "${APP_SOURCE}" "${APP_TARGET}"
-xattr -dr com.apple.quarantine "${APP_TARGET}" 2>/dev/null || true
-ln -sf "${APP_TARGET}/Contents/MacOS/codexusage" "${BIN_DIR}/codexusage"
-if [[ -L "${HOME}/.local/bin/codexusage" ]]; then
-  rm -f "${HOME}/.local/bin/codexusage"
-fi
-open "${APP_TARGET}"
-
-echo "Installed CodexUsage to ${APP_TARGET}."
-echo "CodexUsage data: ${CODEXUSAGE_HOME}"
-echo "CLI helper: ${BIN_DIR}/codexusage"
-EOF
-chmod +x "${STAGE_DIR}/Install CodexUsage.command"
+cp "${ICON_SVG}" "${STAGE_DIR}/CodexUsage Icon.svg"
 
 rm -f "${DIST_DIR}/${DMG_NAME}"
 hdiutil create \

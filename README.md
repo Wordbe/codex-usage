@@ -1,6 +1,20 @@
-# CodexUsage
+<p align="center">
+  <img src="docs/assets/codexusage-icon.svg" width="112" alt="CodexUsage icon">
+</p>
 
-CodexUsage is a macOS menu bar app that shows Codex usage as a percentage and bar.
+<h1 align="center">CodexUsage</h1>
+
+<p align="center">
+  A small open-source macOS menu bar app that shows Codex 5-hour usage as a percentage and bar.
+</p>
+
+<p align="center">
+  <a href="README.ko.md">Korean README</a>
+  ·
+  <a href="https://github.com/Wordbe/codex-usage/releases/latest">Download latest DMG</a>
+  ·
+  <a href="LICENSE">MIT License</a>
+</p>
 
 한국어 문서는 [README.ko.md](README.ko.md)를 참고하세요.
 
@@ -9,22 +23,36 @@ CodexUsage is a macOS menu bar app that shows Codex usage as a percentage and ba
 1. Download the latest `CodexUsage-*.dmg` from [GitHub Releases](https://github.com/Wordbe/codex-usage/releases/latest).
 2. Open the DMG.
 3. Read `READ BEFORE INSTALL - Open Anyway Guide.txt` inside the DMG.
-4. Double-click `Install CodexUsage.command`.
+4. Double-click `CodexUsage.app`.
 
-If macOS blocks the unsigned installer, Control-click `Install CodexUsage.command`, choose `Open`, then click `Open` again. If it still blocks, open **System Settings > Privacy & Security** and click **Open Anyway** for CodexUsage.
+If macOS blocks the unsigned app, Control-click `CodexUsage.app`, choose `Open`, then click `Open` again. If it still blocks, open **System Settings > Privacy & Security** and click **Open Anyway** for CodexUsage.
 
-The installer copies the app to `~/Applications/CodexUsage.app`, starts it, creates a login item, and links the CLI at `~/.codexusage/bin/codexusage`.
+On first launch from the DMG, CodexUsage copies itself to `~/Applications/CodexUsage.app`, starts the installed copy, creates a login item, and links the CLI at `~/.codexusage/bin/codexusage`.
 
 CodexUsage does not edit your Codex `config.toml` or Codex status line.
+
+## Open Source
+
+CodexUsage is released as an open-source project under the [MIT License](LICENSE).
+
+The repository includes:
+
+- Swift source code for the macOS menu bar app.
+- DMG build and GitHub release scripts.
+- The SVG product icon at [docs/assets/codexusage-icon.svg](docs/assets/codexusage-icon.svg).
+- English and Korean installation docs.
+- Self-installing app launch from the DMG.
+
+Issues and pull requests are welcome at [Wordbe/codex-usage](https://github.com/Wordbe/codex-usage).
 
 ## Build
 
 ```bash
 swift build -c release
-scripts/build-dmg.sh 0.1.0
+scripts/build-dmg.sh 0.1.1
 ```
 
-The DMG is written to `dist/CodexUsage-0.1.0.dmg`.
+The DMG is written to `dist/CodexUsage-0.1.1.dmg`.
 
 ## CLI
 
@@ -80,5 +108,5 @@ Policy:
 After this directory is a GitHub repository with an `origin` remote:
 
 ```bash
-scripts/release-github.sh v0.1.0
+scripts/release-github.sh v0.1.1
 ```

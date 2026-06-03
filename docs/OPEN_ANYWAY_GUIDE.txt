@@ -1,27 +1,29 @@
 READ BEFORE INSTALL - Open Anyway Guide
 
-CodexUsage is not Apple-notarized yet, so macOS may block the installer.
+CodexUsage is not Apple-notarized yet, so macOS may block the app.
 
 Install:
 1. Open CodexUsage.dmg.
-2. Double-click Install CodexUsage.command.
-3. If macOS blocks it, Control-click Install CodexUsage.command and choose Open.
-4. Click Open again when macOS asks.
+2. Double-click CodexUsage.app.
+3. CodexUsage copies itself to ~/Applications and starts the installed app.
+4. If macOS blocks it, Control-click CodexUsage.app and choose Open.
+5. Click Open again when macOS asks.
 
 If it is still blocked:
 1. Open System Settings.
 2. Go to Privacy & Security.
 3. Click Open Anyway for CodexUsage.
-4. Run Install CodexUsage.command again.
+4. Double-click CodexUsage.app again.
 
-What the installer does:
-- Copies CodexUsage.app to ~/Applications.
-- Starts CodexUsage.
+What CodexUsage does on first launch:
+- Copies itself to ~/Applications/CodexUsage.app.
+- Starts the installed app.
 - Creates a login item.
 - Links the CLI at ~/.codexusage/bin/codexusage.
 
 CodexUsage does not edit your Codex config.toml or Codex status line.
 
 Korean:
-macOS가 막으면 Install CodexUsage.command를 Control-클릭하고 열기를 선택하세요.
+DMG를 열고 CodexUsage.app을 더블클릭하세요.
+macOS가 막으면 CodexUsage.app을 Control-클릭하고 열기를 선택하세요.
 그래도 막히면 시스템 설정 > 개인정보 보호 및 보안에서 CodexUsage의 그래도 열기를 누르세요.

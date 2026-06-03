@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-}"
 
 if [[ -z "${VERSION}" ]]; then
-  echo "Usage: scripts/release-github.sh v0.1.0"
+  echo "Usage: scripts/release-github.sh v0.1.1"
   exit 2
 fi
 
@@ -34,9 +34,12 @@ cat > "${NOTES_FILE}" <<EOF
 
 - macOS menu bar Codex 5-hour usage meter.
 - Uses Codex app-server rate-limit data with local caching under ~/.codexusage.
-- Download the DMG, open it, read "READ BEFORE INSTALL - Open Anyway Guide.txt", then run "Install CodexUsage.command".
-- If macOS blocks the unsigned installer, Control-click it and choose Open, or use System Settings > Privacy & Security > Open Anyway.
+- Includes a custom CodexUsage app icon and the SVG source inside the DMG.
+- Download the DMG, open it, read "READ BEFORE INSTALL - Open Anyway Guide.txt", then double-click "CodexUsage.app".
+- The app self-installs to ~/Applications on first launch from the DMG.
+- If macOS blocks the unsigned app, Control-click it and choose Open, or use System Settings > Privacy & Security > Open Anyway.
 - Does not edit Codex config.toml or the Codex status line.
+- Open source under the MIT License.
 - Unsigned DMG. See the included Gatekeeper Guide.
 EOF
 
