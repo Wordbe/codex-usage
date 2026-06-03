@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Wordbe/codex-usage/releases/latest">Download latest DMG</a>
+  <a href="https://github.com/Wordbe/codex-usage/releases/latest/download/CodexUsage.dmg">Download latest DMG</a>
   ·
   <a href="LICENSE">MIT License</a>
 </p>
@@ -18,7 +18,7 @@
 
 ## Download And Install
 
-1. Download the latest `CodexUsage-*.dmg` from [GitHub Releases](https://github.com/Wordbe/codex-usage/releases/latest).
+1. Download the latest [CodexUsage.dmg](https://github.com/Wordbe/codex-usage/releases/latest/download/CodexUsage.dmg).
 2. Open the DMG.
 3. Read `READ BEFORE INSTALL - Open Anyway Guide.txt` inside the DMG.
 4. Double-click `CodexUsage.app`.

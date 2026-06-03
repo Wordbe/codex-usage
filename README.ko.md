@@ -6,11 +6,11 @@
 
 CodexUsage는 Codex 사용량을 퍼센트와 막대로 보여주는 macOS 메뉴바 앱입니다.
 
-English README: [README.md](README.md) · [최신 DMG 다운로드](https://github.com/Wordbe/codex-usage/releases/latest) · [MIT License](LICENSE)
+English README: [README.md](README.md) · [최신 DMG 다운로드](https://github.com/Wordbe/codex-usage/releases/latest/download/CodexUsage.dmg) · [MIT License](LICENSE)
 
 ## 다운로드 및 설치
 
-1. [GitHub Releases](https://github.com/Wordbe/codex-usage/releases/latest)에서 최신 `CodexUsage-*.dmg`를 다운로드합니다.
+1. 최신 [CodexUsage.dmg](https://github.com/Wordbe/codex-usage/releases/latest/download/CodexUsage.dmg)를 다운로드합니다.
 2. DMG를 엽니다.
 3. DMG 안의 `READ BEFORE INSTALL - Open Anyway Guide.txt`를 먼저 읽습니다.
 4. `CodexUsage.app`을 더블클릭합니다.

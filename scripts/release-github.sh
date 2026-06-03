@@ -27,6 +27,7 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 "${ROOT_DIR}/scripts/build-dmg.sh" "${VERSION#v}"
+cp "${ROOT_DIR}/dist/CodexUsage-${VERSION#v}.dmg" "${ROOT_DIR}/dist/CodexUsage.dmg"
 
 NOTES_FILE="${ROOT_DIR}/dist/release-notes-${VERSION}.md"
 cat > "${NOTES_FILE}" <<EOF
@@ -35,7 +36,7 @@ cat > "${NOTES_FILE}" <<EOF
 - macOS menu bar Codex 5-hour usage meter.
 - Uses Codex app-server rate-limit data with local caching under ~/.codexusage.
 - Includes a custom CodexUsage app icon and the SVG source inside the DMG.
-- Download the DMG, open it, read "READ BEFORE INSTALL - Open Anyway Guide.txt", then double-click "CodexUsage.app".
+- Download CodexUsage.dmg, open it, read "READ BEFORE INSTALL - Open Anyway Guide.txt", then double-click "CodexUsage.app".
 - The app self-installs to ~/Applications on first launch from the DMG.
 - If macOS blocks the unsigned app, Control-click it and choose Open, or use System Settings > Privacy & Security > Open Anyway.
 - Does not edit Codex config.toml or the Codex status line.
@@ -45,5 +46,6 @@ EOF
 
 gh release create "${VERSION}" \
   "${ROOT_DIR}/dist/CodexUsage-${VERSION#v}.dmg" \
+  "${ROOT_DIR}/dist/CodexUsage.dmg" \
   --title "CodexUsage ${VERSION}" \
   --notes-file "${NOTES_FILE}"
