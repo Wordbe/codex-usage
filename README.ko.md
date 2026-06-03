@@ -35,6 +35,8 @@ CodexUsage는 [MIT License](LICENSE)로 공개된 오픈소스 프로젝트입�
 
 이슈와 Pull Request는 [Wordbe/codex-usage](https://github.com/Wordbe/codex-usage)에서 받을 수 있습니다.
 
+보안 문제는 공개 이슈 대신 비공개로 제보해주세요. [SECURITY.md](SECURITY.md)를 참고하세요.
+
 ## CLI
 
 ```bash

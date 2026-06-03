@@ -43,14 +43,16 @@ The repository includes:
 
 Issues and pull requests are welcome at [Wordbe/codex-usage](https://github.com/Wordbe/codex-usage).
 
+Security issues should be reported privately. See [SECURITY.md](SECURITY.md).
+
 ## Build
 
 ```bash
 swift build -c release
-scripts/build-dmg.sh 0.1.1
+scripts/build-dmg.sh 0.1.2
 ```
 
-The DMG is written to `dist/CodexUsage-0.1.1.dmg`.
+The DMG is written to `dist/CodexUsage-0.1.2.dmg`.
 
 ## CLI
 
@@ -106,5 +108,5 @@ Policy:
 After this directory is a GitHub repository with an `origin` remote:
 
 ```bash
-scripts/release-github.sh v0.1.1
+scripts/release-github.sh v0.1.2
 ```

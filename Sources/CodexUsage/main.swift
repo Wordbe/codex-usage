@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 
-let appVersion = "0.1.1"
+let appVersion = "0.1.2"
 let usageCacheMaxAge: TimeInterval = 30
 let usageSyncInterval: TimeInterval = 60
 let usageStaleFallbackMaxAge: TimeInterval = 6 * 60 * 60
@@ -342,8 +342,8 @@ func mergedEnvironment() -> [String: String] {
     ]
     let existing = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
     var seen = Set<String>()
-    let pathDirs = (existing.split(separator: ":").map(String.init) + additions).filter { dir in
-        if seen.contains(dir) {
+    let pathDirs = (additions + existing.split(separator: ":").map(String.init)).filter { dir in
+        if dir.isEmpty || seen.contains(dir) {
             return false
         }
         seen.insert(dir)
@@ -377,12 +377,6 @@ func findCodexExecutable() -> String? {
                 return candidate
             }
         }
-    }
-
-    if let shellPath = runSmallCommand("/bin/zsh", args: ["-lic", "command -v codex"], timeout: 4),
-       fm.isExecutableFile(atPath: shellPath),
-       isUsableCodexExecutable(shellPath) {
-        return shellPath
     }
 
     return nil

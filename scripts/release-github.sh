@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-}"
 
 if [[ -z "${VERSION}" ]]; then
-  echo "Usage: scripts/release-github.sh v0.1.1"
+  echo "Usage: scripts/release-github.sh v0.1.2"
   exit 2
 fi
 
