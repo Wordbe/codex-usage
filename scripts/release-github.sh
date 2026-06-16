@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-}"
 
 if [[ -z "${VERSION}" ]]; then
-  echo "Usage: scripts/release-github.sh v0.1.2"
+  echo "Usage: scripts/release-github.sh v0.1.3"
   exit 2
 fi
 
@@ -34,7 +34,9 @@ cat > "${NOTES_FILE}" <<EOF
 # CodexUsage ${VERSION}
 
 - macOS menu bar Codex 5-hour usage meter.
-- Uses Codex app-server rate-limit data with local caching under ~/.codexusage.
+- Prefer Codex /status session rate-limit events and fall back to Codex app-server data.
+- Avoids showing stale cached usage as a current menu bar percentage.
+- Repairs the ~/.codexusage/bin/codexusage helper link if it points at a removed app translocation path.
 - Includes a custom CodexUsage app icon.
 - Download CodexUsage.dmg, open it, read "READ BEFORE INSTALL - Open Anyway Guide.txt", then double-click "CodexUsage.app".
 - The app self-installs to ~/Applications on first launch from the DMG.

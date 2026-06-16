@@ -49,10 +49,10 @@ Security issues should be reported privately. See [SECURITY.md](SECURITY.md).
 
 ```bash
 swift build -c release
-scripts/build-dmg.sh 0.1.2
+scripts/build-dmg.sh 0.1.3
 ```
 
-The DMG is written to `dist/CodexUsage-0.1.2.dmg`.
+The DMG is written to `dist/CodexUsage-0.1.3.dmg`.
 
 ## CLI
 
@@ -108,5 +108,5 @@ Policy:
 After this directory is a GitHub repository with an `origin` remote:
 
 ```bash
-scripts/release-github.sh v0.1.2
+scripts/release-github.sh v0.1.3
 ```

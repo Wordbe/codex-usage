@@ -2,9 +2,10 @@ import AppKit
 import Darwin
 import Foundation
 
-let appVersion = "0.1.2"
+let appVersion = "0.1.3"
 let usageCacheMaxAge: TimeInterval = 30
 let usageSyncInterval: TimeInterval = 60
+let usageMenuDisplayMaxAge: TimeInterval = usageSyncInterval * 2 + usageCacheMaxAge
 let usageStaleFallbackMaxAge: TimeInterval = 6 * 60 * 60
 
 struct RateLimitWindow: Codable {
@@ -491,6 +492,10 @@ func statusLineText(_ snapshot: UsageSnapshot) -> String {
     "\(formatPercent(snapshot.usedPercent)) used \(renderTerminalBar(snapshot.usedPercent))"
 }
 
+func snapshotUsesStatusSession(_ snapshot: UsageSnapshot, read: UsageRead?) -> Bool {
+    read?.source == .statusSession || snapshot.source == "codex-status-session"
+}
+
 func resetMarkerProgress(for window: RateLimitWindow?, now: Date = Date()) -> Double? {
     guard let window, let resetsAt = window.resetsAt else {
         return nil
@@ -872,7 +877,7 @@ final class MenuBarController: NSObject {
         rebuildMenu()
         installLaunchAgentIfAppropriate()
         installCLIHelperIfAppropriate()
-        if let cached = usageService.cached() {
+        if let cached = usageService.cached(maxAge: usageCacheMaxAge) {
             latestSnapshot = cached.snapshot
             latestRead = cached
             updateTitle()
@@ -926,12 +931,24 @@ final class MenuBarController: NSObject {
     private func updateTitle() {
         if let snapshot = latestSnapshot {
             let sourceLabel = latestRead?.source.label ?? "unknown"
-            applyMenuBarDisplay(
-                percent: snapshot.usedPercent,
-                title: formatPercent(snapshot.usedPercent),
-                tooltip: "Codex 5h used \(formatPercent(snapshot.usedPercent)); \(sourceLabel); synced \(formatSyncTime(latestRead?.cacheSavedAt ?? snapshot.fetchedAt))",
-                markerProgress: resetMarkerProgress(for: snapshot.fiveHourWindow)
-            )
+            let snapshotDate = latestSnapshotDate(for: snapshot)
+            if latestSnapshotIsTooStale(for: snapshot) {
+                let lastValue = "last cached \(formatPercent(snapshot.usedPercent))"
+                let errorText = latestError.map { "; \($0)" } ?? ""
+                applyMenuBarDisplay(
+                    percent: nil,
+                    title: "--%",
+                    tooltip: "Codex 5h usage is stale; \(lastValue); \(sourceLabel); synced \(formatSyncTime(snapshotDate))\(errorText)",
+                    markerProgress: nil
+                )
+            } else {
+                applyMenuBarDisplay(
+                    percent: snapshot.usedPercent,
+                    title: formatPercent(snapshot.usedPercent),
+                    tooltip: "Codex 5h used \(formatPercent(snapshot.usedPercent)); \(sourceLabel); synced \(formatSyncTime(snapshotDate))",
+                    markerProgress: resetMarkerProgress(for: snapshot.fiveHourWindow)
+                )
+            }
         } else {
             applyMenuBarDisplay(
                 percent: nil,
@@ -949,10 +966,26 @@ final class MenuBarController: NSObject {
         button.toolTip = tooltip
     }
 
+    private func latestSnapshotDate(for snapshot: UsageSnapshot) -> Date {
+        latestRead?.cacheSavedAt ?? snapshot.fetchedAt
+    }
+
+    private func latestSnapshotIsTooStale(for snapshot: UsageSnapshot) -> Bool {
+        if latestRead?.source == .staleCache {
+            return true
+        }
+        guard latestRead?.source != .statusSession else {
+            return !isUsableStatusSessionSnapshot(snapshot)
+        }
+        return Date().timeIntervalSince(latestSnapshotDate(for: snapshot)) > usageMenuDisplayMaxAge
+    }
+
     private func rebuildMenu() {
         let menu = NSMenu()
         if let snapshot = latestSnapshot {
-            let title = "Codex 5h Used \(statusLineText(snapshot))"
+            let isStale = latestSnapshotIsTooStale(for: snapshot)
+            let titlePrefix = isStale ? "Cached Codex 5h Used" : "Codex 5h Used"
+            let title = "\(titlePrefix) \(statusLineText(snapshot))"
             menu.addItem(infoItem(title, weight: .semibold))
             menu.addItem(infoItem("5h Remaining: \(formatPercent(snapshot.remainingPercent)) resets \(formatReset(snapshot.fiveHourWindow?.resetsAt))"))
             if let secondary = snapshot.secondary {
@@ -962,7 +995,7 @@ final class MenuBarController: NSObject {
                 menu.addItem(infoItem("Plan: \(planType)"))
             }
             menu.addItem(.separator())
-            if latestRead?.source == .statusSession {
+            if snapshotUsesStatusSession(snapshot, read: latestRead) {
                 menu.addItem(infoItem("Data: Codex /status session token_count"))
                 menu.addItem(infoItem("Field: payload.rate_limits.primary.used_percent"))
             } else {
@@ -970,7 +1003,10 @@ final class MenuBarController: NSObject {
                 menu.addItem(infoItem("Field: rateLimitsByLimitId.codex.primary.usedPercent"))
             }
             if let latestRead {
-                menu.addItem(infoItem("Source: \(latestRead.source.label), age \(formatAge(latestRead.cacheSavedAt ?? snapshot.fetchedAt))"))
+                menu.addItem(infoItem("Source: \(latestRead.source.label), age \(formatAge(latestSnapshotDate(for: snapshot)))"))
+                if isStale {
+                    menu.addItem(infoItem("Menu bar: hidden because cached usage is stale"))
+                }
                 if let fallbackError = latestRead.fallbackError {
                     menu.addItem(infoItem("Last sync error: \(fallbackError)"))
                 }
@@ -1204,7 +1240,7 @@ func installCLIHelperIfAppropriate() {
         try fm.createDirectory(atPath: binDir, withIntermediateDirectories: true)
         try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root)
         try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binDir)
-        if fm.fileExists(atPath: linkPath) {
+        if fm.fileExists(atPath: linkPath) || (try? fm.destinationOfSymbolicLink(atPath: linkPath)) != nil {
             try fm.removeItem(atPath: linkPath)
         }
         try fm.createSymbolicLink(atPath: linkPath, withDestinationPath: executable)
@@ -1256,7 +1292,7 @@ func runCLI(_ args: [String]) -> Int32 {
                 if let secondary = snapshot.secondary {
                     print("Weekly: \(formatPercent(secondary.usedPercent)) reset: \(formatReset(secondary.resetsAt))")
                 }
-                if read.source == .statusSession {
+                if snapshotUsesStatusSession(snapshot, read: read) {
                     print("Source: \(read.source.label) Codex /status session token_count")
                     print("Field: payload.rate_limits.primary.used_percent")
                 } else {

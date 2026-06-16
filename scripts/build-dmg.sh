@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-0.1.2}"
+VERSION="${1:-0.1.3}"
 APP_NAME="CodexUsage"
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 BUILD_DIR="${ROOT_DIR}/.build/release"
