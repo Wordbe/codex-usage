@@ -49,10 +49,10 @@ Security issues should be reported privately. See [SECURITY.md](SECURITY.md).
 
 ```bash
 swift build -c release
-scripts/build-dmg.sh 0.1.3
+scripts/build-dmg.sh 0.1.4
 ```
 
-The DMG is written to `dist/CodexUsage-0.1.3.dmg`.
+The DMG is written to `dist/CodexUsage-0.1.4.dmg`.
 
 ## CLI
 
@@ -71,42 +71,60 @@ export CODEXUSAGE_CODEX_PATH="$(command -v codex)"
 
 ## Usage Source And Sync
 
-CodexUsage prefers the same session rate-limit event that Codex `/status` uses:
+CodexUsage follows the ChatGPT desktop app's file-based authentication at
+`~/.codex/auth.json`. It explicitly uses `CODEX_HOME=~/.codex`, regardless of the
+launching shell's `CODEX_HOME`. The installed ChatGPT app's bundled Codex is
+preferred; `CODEXUSAGE_CODEX_PATH` can override executable discovery.
+
+Each fresh read uses one app-server connection:
 
 ```text
-~/.codex/sessions/**/*.jsonl
-event_msg.payload.rate_limits.primary.used_percent
-```
-
-If no current session event is available, CodexUsage falls back to:
-
-```text
-codex app-server --stdio
+account/read
 account/rateLimits/read
-rateLimitsByLimitId.codex.primary.usedPercent
 ```
 
-The primary window is the 5-hour Codex limit. The app displays current 5-hour usage, not weekly usage.
+The menu and CLI show the account email, plan, and last update time. The menu bar
+shows the 300-minute quota window. If that window is absent, it shows `--%`
+instead of interpreting missing quota as 0% used. Weekly quota is shown when the
+server provides a 10080-minute window.
 
-Cache file:
+Cache files are isolated by a hash of the user and workspace identity:
 
 ```text
-~/.codexusage/cache/rate-limits.json
+~/.codexusage/cache/accounts/<identity-hash>.json
 ```
 
-Other CodexUsage files are also kept under `~/.codexusage`, except the macOS login item plist, which must live in `~/Library/LaunchAgents`.
+Tokens are never written to the usage cache. Old unscoped caches are not reused.
+API-key and keychain-only authentication are not supported by this file-based
+account tracking. CodexUsage does not change your authentication settings.
 
 Policy:
 
-- App syncs every 60 seconds.
-- Cache TTL is 30 seconds.
-- `~/.codexusage/bin/codexusage status --refresh` forces a fresh sync.
-- `~/.codexusage/bin/codexusage status --diagnose` compares app-server, cache, and the latest Codex session `token_count` rate-limit event.
+- Usage syncs every 60 seconds; cache TTL is 30 seconds.
+- Account identity is checked every 2 seconds, including while the menu is open.
+- Switching accounts clears the display and triggers a fresh read without restarting CodexUsage.
+- Responses from a previous account are discarded; cached fallback is limited to the same user and workspace.
+- `status --refresh` bypasses the fresh cache. On failure, an explicitly marked same-account stale cache may be returned for up to 6 hours; the menu bar hides stale percentages.
+- Session logs are diagnostic only and never supply the default displayed quota.
+- `status --diagnose` compares API, cache, and session values; a session may belong to a different account.
+
+Other CodexUsage files stay under `~/.codexusage`, except the login item plist in
+`~/Library/LaunchAgents`.
+
+## Tests
+
+```bash
+swift test
+python3 -m unittest discover -s Tests -p 'test_*.py'
+```
+
+The Python tests use the debug binary built by `swift test` and a local fake
+app-server. They do not use real credentials or make network requests.
 
 ## GitHub Release
 
 After this directory is a GitHub repository with an `origin` remote:
 
 ```bash
-scripts/release-github.sh v0.1.3
+scripts/release-github.sh v0.1.4
 ```

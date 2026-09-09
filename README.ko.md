@@ -54,26 +54,48 @@ export CODEXUSAGE_CODEX_PATH="$(command -v codex)"
 
 ## 데이터와 동기화
 
-CodexUsage는 먼저 Codex `/status`가 사용하는 세션 rate-limit 이벤트를 읽습니다.
+CodexUsage는 ChatGPT 앱의 `~/.codex/auth.json` 인증을 따라갑니다.
+조회 프로세스에는 `CODEX_HOME=~/.codex`를 명시하므로 실행한 터미널의 다른
+`CODEX_HOME` 설정에 영향을 받지 않습니다. 설치된 ChatGPT 앱의 내장 Codex를
+우선 사용하며 `CODEXUSAGE_CODEX_PATH`로 실행 파일을 지정할 수 있습니다.
+
+새 조회마다 같은 app-server 연결에서 다음 API를 호출합니다.
 
 ```text
-~/.codex/sessions/**/*.jsonl
-event_msg.payload.rate_limits.primary.used_percent
-```
-
-현재 세션 이벤트가 없으면 다음 Codex app-server API를 사용합니다.
-
-```text
-codex app-server --stdio
+account/read
 account/rateLimits/read
-rateLimitsByLimitId.codex.primary.usedPercent
 ```
 
-앱은 5시간 Codex 사용량을 표시합니다. 캐시는 `~/.codexusage/cache/rate-limits.json`에 저장됩니다.
+메뉴와 CLI에 이메일, 플랜, 갱신 시각을 표시합니다. 메뉴바에는 300분 구간의
+사용량을 표시하며, 해당 구간이 없으면 `0%` 대신 `--%`를 보여줍니다.
+서버가 10080분 구간을 제공하면 주간 사용량도 메뉴에 표시해요.
+
+캐시는 사용자와 워크스페이스 식별자를 해시하여 분리합니다.
+
+```text
+~/.codexusage/cache/accounts/<identity-hash>.json
+```
+
+인증 토큰은 캐시에 저장하지 않으며, 이전 공용 캐시는 재사용하지 않습니다.
+API 키와 키체인에만 저장된 인증은 이 파일 기반 계정 추적에서 지원하지 않습니다.
+CodexUsage 자체는 인증 설정을 변경하지 않아요.
 
 정책:
 
-- 앱은 60초마다 동기화합니다.
-- 캐시 TTL은 30초입니다.
-- `status --refresh`는 새 동기화를 강제합니다.
-- `status --diagnose`는 app-server, cache, 최신 Codex session 이벤트를 비교합니다.
+- 사용량은 60초마다 동기화하고 캐시 TTL은 30초입니다.
+- 계정 변경은 메뉴를 열어둔 상태에서도 2초마다 확인합니다.
+- 계정이 바뀌면 이전 표시를 지우고 즉시 조회하며 CodexUsage 재시작은 필요 없습니다.
+- 이전 계정의 늦은 응답은 버리고, 캐시 대체도 동일 사용자와 워크스페이스로 제한합니다.
+- `status --refresh`는 새 조회를 수행합니다. 실패하면 같은 계정의 최대 6시간 이전 캐시를 오래된 데이터로 명시해 반환할 수 있으며, 메뉴바에서는 오래된 퍼센트를 숨깁니다.
+- 세션 로그는 진단용으로만 사용하며 기본 사용량 표시에는 사용하지 않습니다.
+- `status --diagnose`는 API, 캐시, 세션을 비교합니다. 세션은 다른 계정의 기록일 수 있어요.
+
+## 검증
+
+```bash
+swift test
+python3 -m unittest discover -s Tests -p 'test_*.py'
+```
+
+Python 테스트는 `swift test`로 빌드된 디버그 실행 파일과 가짜 app-server를 사용합니다.
+실제 인증 정보나 네트워크를 사용하지 않습니다.

@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 
-let appVersion = "0.1.3"
+let appVersion = "0.1.4"
 let usageCacheMaxAge: TimeInterval = 30
 let usageSyncInterval: TimeInterval = 60
 let usageMenuDisplayMaxAge: TimeInterval = usageSyncInterval * 2 + usageCacheMaxAge
@@ -113,6 +113,7 @@ struct UsageSnapshot: Codable {
     let credits: CreditsSnapshot?
     let rateLimitReachedType: String?
     let fetchedAt: Date
+    var account: UsageAccount? = nil
 
     var displayPercent: Double {
         usedPercent
@@ -127,7 +128,11 @@ struct UsageSnapshot: Codable {
     }
 
     var fiveHourWindow: RateLimitWindow? {
-        primary
+        [primary, secondary].compactMap { $0 }.first { $0.windowDurationMins == 300 }
+    }
+
+    var weeklyWindow: RateLimitWindow? {
+        [primary, secondary].compactMap { $0 }.first { $0.windowDurationMins == 10080 }
     }
 }
 
@@ -137,6 +142,7 @@ enum UsageError: Error, CustomStringConvertible {
     case processLaunch(String)
     case rpc(String)
     case malformedResponse
+    case accountChanged
 
     var description: String {
         switch self {
@@ -150,29 +156,31 @@ enum UsageError: Error, CustomStringConvertible {
             return message
         case .malformedResponse:
             return "Codex returned an unexpected rate-limit response."
+        case .accountChanged:
+            return "ChatGPT account changed while fetching usage. Refresh again."
         }
     }
 }
 
 final class CodexUsageFetcher: @unchecked Sendable {
-    private let requestID = 2
+    private let requestID = 3
 
     func fetch(timeout: TimeInterval = 20) throws -> UsageSnapshot {
+        let context = try AccountContext.current()
         guard let codexPath = findCodexExecutable() else {
             throw UsageError.codexNotFound
         }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codexPath)
-        process.arguments = ["app-server", "--stdio"]
+        process.arguments = ["-c", "cli_auth_credentials_store=\"file\"", "app-server"]
         process.environment = mergedEnvironment()
 
         let input = Pipe()
         let output = Pipe()
-        let error = Pipe()
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = error
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -207,11 +215,15 @@ final class CodexUsageFetcher: @unchecked Sendable {
             if process.isRunning {
                 process.terminate()
             }
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             process.waitUntilExit()
         }
 
-        var buffer = ""
+        var buffer = Data()
         var sentRateLimitRequest = false
+        var account: UsageAccount?
         let deadline = Date().addingTimeInterval(timeout)
         let stdoutFD = output.fileHandleForReading.fileDescriptor
 
@@ -240,24 +252,39 @@ final class CodexUsageFetcher: @unchecked Sendable {
             if count == 0 {
                 break
             }
-            guard let chunk = String(bytes: bytes.prefix(count), encoding: .utf8) else {
-                continue
-            }
-            buffer += chunk
-
-            let parts = buffer.split(separator: "\n", omittingEmptySubsequences: false)
-            let completeLines = parts.dropLast().map(String.init)
-            buffer = String(parts.last ?? "")
-
-            for line in completeLines where !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            buffer.append(contentsOf: bytes.prefix(count))
+            while let newline = buffer.firstIndex(of: 0x0a) {
+                let data = buffer[..<newline]
+                guard let line = String(data: data, encoding: .utf8) else { throw UsageError.malformedResponse }
+                buffer.removeSubrange(...newline)
+                if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
                 if Self.responseID(line) == 1, !sentRateLimitRequest {
                     sentRateLimitRequest = true
+                    _ = try Self.responseResult(line)
+                    input.fileHandleForWriting.write(Self.jsonLine(["method": "initialized"]))
+                    input.fileHandleForWriting.write(Self.jsonLine([
+                        "id": 2, "method": "account/read", "params": ["refreshToken": false]
+                    ]))
+                    continue
+                }
+                if Self.responseID(line) == 2 {
+                    let result = try Self.responseResult(line)
+                    guard let info = result["account"] as? [String: Any], info["type"] as? String == "chatgpt" else {
+                        throw UsageError.rpc("Sign in with a ChatGPT account to read quota.")
+                    }
+                    let email = info["email"] as? String
+                    if let expected = context.email, let email, email != expected { throw UsageError.accountChanged }
+                    try context.requireCurrent()
+                    account = UsageAccount(key: context.key, email: email, planType: info["planType"] as? String)
                     input.fileHandleForWriting.write(rateLimitData)
                     continue
                 }
                 if let parsed = Self.parseRateLimitLine(line, expectedID: requestID) {
                     switch parsed {
-                    case .success(let snapshot):
+                    case .success(var snapshot):
+                        guard let account else { throw UsageError.malformedResponse }
+                        try context.requireCurrent()
+                        snapshot.account = account
                         return snapshot
                     case .failure(let error):
                         throw error
@@ -274,6 +301,18 @@ final class CodexUsageFetcher: @unchecked Sendable {
         var line = data
         line.append(0x0a)
         return line
+    }
+
+    private static func responseResult(_ line: String) throws -> [String: Any] {
+        guard let data = line.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw UsageError.malformedResponse
+        }
+        if let error = object["error"] as? [String: Any] {
+            throw UsageError.rpc(error["message"] as? String ?? "Codex request failed.")
+        }
+        guard let result = object["result"] as? [String: Any] else { throw UsageError.malformedResponse }
+        return result
     }
 
     private static func parseRateLimitLine(_ line: String, expectedID: Int) -> Result<UsageSnapshot, Error>? {
@@ -351,6 +390,7 @@ func mergedEnvironment() -> [String: String] {
         return true
     }
     env["PATH"] = pathDirs.joined(separator: ":")
+    env["CODEX_HOME"] = AccountContext.codexHome
     return env
 }
 
@@ -360,6 +400,11 @@ func findCodexExecutable() -> String? {
        fm.isExecutableFile(atPath: override),
        isUsableCodexExecutable(override) {
         return override
+    }
+
+    for app in ["/Applications/ChatGPT.app", "\(userHomeDirectory())/Applications/ChatGPT.app"] {
+        let bundled = "\(app)/Contents/Resources/codex"
+        if fm.isExecutableFile(atPath: bundled), isUsableCodexExecutable(bundled) { return bundled }
     }
 
     let pathDirs = (mergedEnvironment()["PATH"] ?? "").split(separator: ":").map(String.init)
@@ -489,7 +534,8 @@ func formatReset(_ timestamp: TimeInterval?) -> String {
 }
 
 func statusLineText(_ snapshot: UsageSnapshot) -> String {
-    "\(formatPercent(snapshot.usedPercent)) used \(renderTerminalBar(snapshot.usedPercent))"
+    guard snapshot.fiveHourWindow != nil else { return "5h quota unavailable" }
+    return "\(formatPercent(snapshot.usedPercent)) used \(renderTerminalBar(snapshot.usedPercent))"
 }
 
 func snapshotUsesStatusSession(_ snapshot: UsageSnapshot, read: UsageRead?) -> Bool {
@@ -546,41 +592,39 @@ struct UsageCacheEnvelope: Codable {
 
 final class UsageCache: @unchecked Sendable {
     private let fm = FileManager.default
-    let path: String
-    private let legacyPath: String
+    let directory: String
 
-    init(
-        path: String = "\(codexUsageRootDirectory())/cache/rate-limits.json",
-        legacyPath: String = "\(userHomeDirectory())/Library/Caches/CodexUsage/rate-limits.json"
-    ) {
-        self.path = path
-        self.legacyPath = legacyPath
+    init(directory: String = "\(codexUsageRootDirectory())/cache/accounts") {
+        self.directory = directory
     }
 
-    func load(maxAge: TimeInterval? = nil) -> UsageCacheEnvelope? {
-        for candidate in [path, legacyPath] {
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: candidate)),
-                  let envelope = try? JSONDecoder().decode(UsageCacheEnvelope.self, from: data) else {
-                continue
-            }
-            if let maxAge, Date().timeIntervalSince(envelope.savedAt) > maxAge {
-                continue
-            }
-            return envelope
-        }
-        return nil
+    var path: String {
+        guard let context = try? AccountContext.current() else { return directory }
+        return path(for: context.key)
+    }
+
+    func path(for key: String) -> String { "\(directory)/\(key).json" }
+
+    func load(context: AccountContext, maxAge: TimeInterval? = nil) -> UsageCacheEnvelope? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path(for: context.key))),
+              let envelope = try? JSONDecoder().decode(UsageCacheEnvelope.self, from: data),
+              envelope.version == 2, envelope.snapshot.account?.key == context.key else { return nil }
+        let age = Date().timeIntervalSince(envelope.savedAt)
+        guard age >= -5 else { return nil }
+        if let maxAge, age > maxAge { return nil }
+        return envelope
     }
 
     func save(_ snapshot: UsageSnapshot) throws {
-        let envelope = UsageCacheEnvelope(version: 1, savedAt: Date(), snapshot: snapshot)
+        guard let account = snapshot.account else { throw UsageError.malformedResponse }
+        let envelope = UsageCacheEnvelope(version: 2, savedAt: Date(), snapshot: snapshot)
         let data = try JSONEncoder().encode(envelope)
-        let root = codexUsageRootDirectory()
-        let cacheDir = URL(fileURLWithPath: path).deletingLastPathComponent().path
-        try fm.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
-        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root)
-        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cacheDir)
-        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        try fm.createDirectory(atPath: directory, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
+        let url = URL(fileURLWithPath: path(for: account.key))
+        try data.write(to: url, options: .atomic)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
 
@@ -589,33 +633,30 @@ final class UsageService: @unchecked Sendable {
     let cache = UsageCache()
 
     func cached(maxAge: TimeInterval = usageStaleFallbackMaxAge) -> UsageRead? {
-        guard let envelope = cache.load(maxAge: maxAge) else { return nil }
+        guard let context = try? AccountContext.current(),
+              let envelope = cache.load(context: context, maxAge: maxAge),
+              (try? AccountContext.current().key) == context.key else { return nil }
         let source: UsageReadSource = Date().timeIntervalSince(envelope.savedAt) > usageCacheMaxAge ? .staleCache : .cache
         return UsageRead(snapshot: envelope.snapshot, source: source, cacheSavedAt: envelope.savedAt, fallbackError: nil)
     }
 
     func read(forceRefresh: Bool = false, maxAge: TimeInterval = usageCacheMaxAge) throws -> UsageRead {
-        if let session = latestUsableSessionRateLimit() {
-            try? cache.save(session.snapshot)
-            return UsageRead(snapshot: session.snapshot, source: .statusSession, cacheSavedAt: session.snapshot.fetchedAt, fallbackError: nil)
-        }
-
-        if !forceRefresh, let envelope = cache.load(maxAge: maxAge) {
+        let context = try AccountContext.current()
+        if !forceRefresh, let envelope = cache.load(context: context, maxAge: maxAge) {
+            try context.requireCurrent()
             return UsageRead(snapshot: envelope.snapshot, source: .cache, cacheSavedAt: envelope.savedAt, fallbackError: nil)
         }
-
         do {
             let snapshot = try fetcher.fetch()
+            try context.requireCurrent()
+            guard snapshot.account?.key == context.key else { throw UsageError.accountChanged }
             try? cache.save(snapshot)
             return UsageRead(snapshot: snapshot, source: .fresh, cacheSavedAt: Date(), fallbackError: nil)
         } catch {
-            if let envelope = cache.load(maxAge: usageStaleFallbackMaxAge) {
-                return UsageRead(
-                    snapshot: envelope.snapshot,
-                    source: .staleCache,
-                    cacheSavedAt: envelope.savedAt,
-                    fallbackError: String(describing: error)
-                )
+            try context.requireCurrent()
+            if let envelope = cache.load(context: context, maxAge: usageStaleFallbackMaxAge) {
+                return UsageRead(snapshot: envelope.snapshot, source: .staleCache,
+                                 cacheSavedAt: envelope.savedAt, fallbackError: String(describing: error))
             }
             throw error
         }
@@ -705,7 +746,9 @@ func isUsableStatusSessionSnapshot(_ snapshot: UsageSnapshot, now: Date = Date()
 }
 
 func formatSnapshotLine(label: String, snapshot: UsageSnapshot) -> String {
-    "\(label): \(formatPercent(snapshot.usedPercent)) used / \(formatPercent(snapshot.remainingPercent)) left, reset \(formatReset(snapshot.fiveHourWindow?.resetsAt)), weekly \(formatPercent(snapshot.secondary?.usedPercent ?? 0)) used"
+    let fiveHour = snapshot.fiveHourWindow.map { "\(formatPercent($0.usedPercent)) used, reset \(formatReset($0.resetsAt))" } ?? "unavailable"
+    let weekly = snapshot.weeklyWindow.map { "\(formatPercent($0.usedPercent)) used" } ?? "unavailable"
+    return "\(label): 5h \(fiveHour), weekly \(weekly)"
 }
 
 func diagnoseStatus() -> Int32 {
@@ -730,7 +773,7 @@ func diagnoseStatus() -> Int32 {
             print(formatSnapshotLine(label: "Latest session token_count", snapshot: session.snapshot))
             print("  Timestamp: \(session.timestamp ?? "unknown")")
             print("  File: \(session.path)")
-            print("  Usable for default display: \(isUsableStatusSessionSnapshot(session.snapshot) ? "yes" : "no")")
+            print("  Diagnostic only: session ownership is not verified; never used for display.")
             let delta = freshSnapshot.usedPercent - session.snapshot.usedPercent
             if abs(delta) <= 1 {
                 print("Compare: app-server and latest session agree within 1%.")
@@ -744,7 +787,7 @@ func diagnoseStatus() -> Int32 {
         let selected = try service.read(forceRefresh: true)
         print(formatSnapshotLine(label: "Default display", snapshot: selected.snapshot))
         print("  Source: \(selected.source.label)")
-        print("Policy: /status session first, menu sync every \(Int(usageSyncInterval))s, cache TTL \(Int(usageCacheMaxAge))s, stale fallback \(Int(usageStaleFallbackMaxAge / 3600))h")
+        print("Policy: account API first, menu sync every \(Int(usageSyncInterval))s, cache TTL \(Int(usageCacheMaxAge))s, stale fallback \(Int(usageStaleFallbackMaxAge / 3600))h")
         return 0
     } catch {
         fputs("\(String(describing: error))\n", stderr)
@@ -776,11 +819,13 @@ func formatAge(_ date: Date?) -> String {
 func jsonStatus(_ snapshot: UsageSnapshot, read: UsageRead? = nil) -> String {
     var object: [String: Any] = [
         "source": snapshot.source,
-        "planType": snapshot.planType ?? NSNull(),
-        "usedPercent": snapshot.usedPercent,
-        "remainingPercent": snapshot.remainingPercent,
+        "accountEmail": snapshot.account?.email ?? NSNull(),
+        "accountKey": snapshot.account?.key ?? NSNull(),
+        "planType": snapshot.planType ?? snapshot.account?.planType ?? NSNull(),
+        "usedPercent": snapshot.fiveHourWindow?.usedPercent ?? NSNull(),
+        "remainingPercent": snapshot.fiveHourWindow.map { max(0, min(100, 100 - $0.usedPercent)) } ?? NSNull(),
         "primaryUsedPercent": snapshot.primary?.usedPercent ?? NSNull(),
-        "primaryRemainingPercent": snapshot.fiveHourWindow.map { max(0, min(100, 100 - $0.usedPercent)) } ?? NSNull(),
+        "primaryRemainingPercent": snapshot.primary.map { max(0, min(100, 100 - $0.usedPercent)) } ?? NSNull(),
         "primaryWindowDurationMins": snapshot.primary?.windowDurationMins ?? NSNull(),
         "primaryResetsAt": snapshot.primary?.resetsAt ?? NSNull(),
         "secondaryUsedPercent": snapshot.secondary?.usedPercent ?? NSNull(),
@@ -863,12 +908,16 @@ final class MenuBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let usageService = UsageService()
     private var timer: Timer?
+    private var accountTimer: Timer?
+    private var observedAccountKey: String?
+    private var generation = 0
     private var latestSnapshot: UsageSnapshot?
     private var latestRead: UsageRead?
     private var latestError: String?
     private var isRefreshing = false
 
     func start() {
+        observedAccountKey = try? AccountContext.current().key
         if let button = statusItem.button {
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
@@ -889,6 +938,25 @@ final class MenuBarController: NSObject {
                 self?.refresh(forceRefresh: false)
             }
         }
+        accountTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.checkAccount() }
+        }
+        if let accountTimer { RunLoop.main.add(accountTimer, forMode: .common) }
+        if let timer { RunLoop.main.add(timer, forMode: .common) }
+    }
+
+    private func checkAccount() {
+        let key = try? AccountContext.current().key
+        guard key != observedAccountKey else { return }
+        observedAccountKey = key
+        generation += 1
+        isRefreshing = false
+        latestSnapshot = nil
+        latestRead = nil
+        latestError = nil
+        updateTitle()
+        rebuildMenu()
+        refresh(forceRefresh: true)
     }
 
     @objc func refreshNow() {
@@ -903,11 +971,18 @@ final class MenuBarController: NSObject {
         }
 
         let usageService = self.usageService
+        let requestGeneration = generation
         DispatchQueue.global(qos: .utility).async { [weak self] in
             do {
                 let read = try usageService.read(forceRefresh: forceRefresh)
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
+                    guard requestGeneration == self.generation else { return }
+                    guard read.snapshot.account?.key == (try? AccountContext.current().key) else {
+                        self.isRefreshing = false
+                        self.checkAccount()
+                        return
+                    }
                     self.latestSnapshot = read.snapshot
                     self.latestRead = read
                     self.latestError = nil
@@ -919,6 +994,12 @@ final class MenuBarController: NSObject {
                 let message = String(describing: error)
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
+                    guard requestGeneration == self.generation else { return }
+                    if (try? AccountContext.current().key) != self.observedAccountKey {
+                        self.isRefreshing = false
+                        self.checkAccount()
+                        return
+                    }
                     self.latestError = message
                     self.isRefreshing = false
                     self.updateTitle()
@@ -930,6 +1011,10 @@ final class MenuBarController: NSObject {
 
     private func updateTitle() {
         if let snapshot = latestSnapshot {
+            guard snapshot.fiveHourWindow != nil else {
+                applyMenuBarDisplay(percent: nil, title: "--%", tooltip: "\(snapshot.account?.email ?? "ChatGPT"): 5h quota unavailable", markerProgress: nil)
+                return
+            }
             let sourceLabel = latestRead?.source.label ?? "unknown"
             let snapshotDate = latestSnapshotDate(for: snapshot)
             if latestSnapshotIsTooStale(for: snapshot) {
@@ -945,7 +1030,7 @@ final class MenuBarController: NSObject {
                 applyMenuBarDisplay(
                     percent: snapshot.usedPercent,
                     title: formatPercent(snapshot.usedPercent),
-                    tooltip: "Codex 5h used \(formatPercent(snapshot.usedPercent)); \(sourceLabel); synced \(formatSyncTime(snapshotDate))",
+                    tooltip: "\(snapshot.account?.email ?? "ChatGPT"): Codex 5h used \(formatPercent(snapshot.usedPercent)); \(sourceLabel); synced \(formatSyncTime(snapshotDate))",
                     markerProgress: resetMarkerProgress(for: snapshot.fiveHourWindow)
                 )
             }
@@ -983,15 +1068,18 @@ final class MenuBarController: NSObject {
     private func rebuildMenu() {
         let menu = NSMenu()
         if let snapshot = latestSnapshot {
+            menu.addItem(infoItem("Account: \(snapshot.account?.email ?? "Email unavailable")", weight: .semibold))
             let isStale = latestSnapshotIsTooStale(for: snapshot)
             let titlePrefix = isStale ? "Cached Codex 5h Used" : "Codex 5h Used"
             let title = "\(titlePrefix) \(statusLineText(snapshot))"
             menu.addItem(infoItem(title, weight: .semibold))
-            menu.addItem(infoItem("5h Remaining: \(formatPercent(snapshot.remainingPercent)) resets \(formatReset(snapshot.fiveHourWindow?.resetsAt))"))
-            if let secondary = snapshot.secondary {
+            if snapshot.fiveHourWindow != nil {
+                menu.addItem(infoItem("5h Remaining: \(formatPercent(snapshot.remainingPercent)) resets \(formatReset(snapshot.fiveHourWindow?.resetsAt))"))
+            }
+            if let secondary = snapshot.weeklyWindow {
                 menu.addItem(infoItem("Weekly used: \(formatPercent(secondary.usedPercent)) resets \(formatReset(secondary.resetsAt))"))
             }
-            if let planType = snapshot.planType {
+            if let planType = snapshot.planType ?? snapshot.account?.planType {
                 menu.addItem(infoItem("Plan: \(planType)"))
             }
             menu.addItem(.separator())
@@ -1011,10 +1099,14 @@ final class MenuBarController: NSObject {
                     menu.addItem(infoItem("Last sync error: \(fallbackError)"))
                 }
             }
-            menu.addItem(infoItem("Sync: every \(Int(usageSyncInterval))s, /status first, cache TTL \(Int(usageCacheMaxAge))s"))
+            menu.addItem(infoItem("Sync: every \(Int(usageSyncInterval))s, account API first, cache TTL \(Int(usageCacheMaxAge))s"))
+            menu.addItem(infoItem("Updated: \(formatSyncTime(latestSnapshotDate(for: snapshot)))"))
             menu.addItem(infoItem("Cache: \(usageService.cache.path)"))
         } else {
             menu.addItem(infoItem("Codex Usage unavailable", weight: .semibold))
+            if let email = try? AccountContext.current().email {
+                menu.addItem(infoItem("Account: \(email)"))
+            }
             if let latestError {
                 menu.addItem(infoItem(latestError))
             }
@@ -1287,9 +1379,13 @@ func runCLI(_ args: [String]) -> Int32 {
                 print(jsonStatus(snapshot, read: read))
             } else {
                 print("Codex \(statusLineText(snapshot))")
-                print("5h remaining: \(formatPercent(snapshot.remainingPercent))")
-                print("5h reset: \(formatReset(snapshot.fiveHourWindow?.resetsAt))")
-                if let secondary = snapshot.secondary {
+                print("Account: \(snapshot.account?.email ?? "Email unavailable")")
+                print("Plan: \(snapshot.planType ?? snapshot.account?.planType ?? "unknown")")
+                if snapshot.fiveHourWindow != nil {
+                    print("5h remaining: \(formatPercent(snapshot.remainingPercent))")
+                    print("5h reset: \(formatReset(snapshot.fiveHourWindow?.resetsAt))")
+                }
+                if let secondary = snapshot.weeklyWindow {
                     print("Weekly: \(formatPercent(secondary.usedPercent)) reset: \(formatReset(secondary.resetsAt))")
                 }
                 if snapshotUsesStatusSession(snapshot, read: read) {
@@ -1301,7 +1397,7 @@ func runCLI(_ args: [String]) -> Int32 {
                 }
                 print("Synced: \(formatSyncTime(read.cacheSavedAt ?? snapshot.fetchedAt)) (age \(formatAge(read.cacheSavedAt ?? snapshot.fetchedAt)))")
                 print("Cache: \(UsageCache().path)")
-                print("Policy: /status session first, sync every \(Int(usageSyncInterval))s, cache TTL \(Int(usageCacheMaxAge))s")
+                print("Policy: account API first, sync every \(Int(usageSyncInterval))s, cache TTL \(Int(usageCacheMaxAge))s")
                 if let fallbackError = read.fallbackError {
                     print("Last sync error: \(fallbackError)")
                 }
