@@ -20,6 +20,8 @@ mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${STAGE_DI
 
 cp "${BUILD_DIR}/codexusage" "${APP_DIR}/Contents/MacOS/codexusage"
 chmod +x "${APP_DIR}/Contents/MacOS/codexusage"
+# Debug symbols embed absolute build paths, which include the builder's home directory.
+strip -S -x "${APP_DIR}/Contents/MacOS/codexusage"
 
 rm -rf "${ICONSET_DIR}"
 mkdir -p "${ICONSET_DIR}"
