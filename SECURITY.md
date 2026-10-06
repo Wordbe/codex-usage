@@ -26,3 +26,8 @@ CodexUsage should not:
 - collect or upload telemetry;
 - require elevated privileges;
 - write outside `~/Applications`, `~/.codexusage`, and `~/Library/LaunchAgents/com.ree.codexusage.plist`.
+
+Optional account switching is the exception and runs only after you enable it. The
+bundled `codex-account` helper then writes `~/.codex-accounts`, `~/.codex/auth.json`,
+and `cli_auth_credentials_store` in `~/.codex/config.toml`, and quits and reopens the
+ChatGPT app. It does not upload credentials.

@@ -19,7 +19,7 @@ macOS가 `"CodexUsage" Not Opened`를 보여주면 **시스템 설정 > 개인�
 
 DMG에서 처음 실행하면 CodexUsage가 스스로 `~/Applications/CodexUsage.app`로 복사되고 설치된 앱을 실행합니다. 로그인 항목을 만들고 CLI를 `~/.codexusage/bin/codexusage`에 연결합니다.
 
-CodexUsage는 Codex `config.toml`이나 Codex status line을 수정하지 않습니다.
+CodexUsage는 계정 전환을 켜지 않는 한 Codex `config.toml`이나 Codex status line을 수정하지 않습니다.
 
 ## 오픈소스
 
@@ -32,6 +32,7 @@ CodexUsage는 [MIT License](LICENSE)로 공개된 오픈소스 프로젝트입�
 - SVG 제품 아이콘: [docs/assets/codexusage-icon.svg](docs/assets/codexusage-icon.svg)
 - 영어/한국어 설치 문서
 - DMG에서 앱 더블클릭만으로 설치되는 self-install 동작
+- 선택 기능인 `codex-account` 도우미: [tools/codex-account](tools/codex-account)
 
 이슈와 Pull Request는 [Wordbe/codex-usage](https://github.com/Wordbe/codex-usage)에서 받을 수 있습니다.
 
@@ -51,6 +52,37 @@ GUI 앱이 Codex를 찾지 못하면 다음을 설정하세요.
 ```bash
 export CODEXUSAGE_CODEX_PATH="$(command -v codex)"
 ```
+
+## 계정 전환 (선택)
+
+계정 전환은 기본적으로 꺼져 있습니다. 메뉴에서 **Enable Account Switching...**을
+누르면 앱에 포함된 `codex-account` 도우미가 `~/.codexusage/bin/codex-account`에
+설치됩니다. Python 3.11 이상이 필요합니다(예: `brew install python`).
+특정 Python을 쓰려면 `CODEXUSAGE_PYTHON`을 지정하세요.
+
+켜면 메뉴에 저장된 계정과 마지막으로 확인한 5시간, 주간 사용량이 표시됩니다.
+계정을 누르면 다음 순서로 전환합니다.
+
+1. ChatGPT 앱을 종료합니다. 처음 한 번 macOS가 CodexUsage의 ChatGPT 제어 권한을 묻습니다.
+2. 현재 로그인을 보관하고 선택한 계정을 `~/.codex/auth.json`에 기록합니다.
+3. ChatGPT 내장 Codex로 계정을 확인하고, 실패하면 되돌린 뒤 ChatGPT를 다시 엽니다.
+
+**Add Account...**는 터미널에서 `codex-account add`(기기 코드 로그인)를 실행합니다.
+로그인과 백업은 소유자 전용 권한으로 `~/.codex-accounts`에 저장됩니다.
+인증 정보가 들어 있으니 공유하지 마세요. 전환 시 `~/.codex/config.toml`에
+`cli_auth_credentials_store = "file"`을 설정하며 기존 파일은 백업합니다.
+
+PATH의 `python3`가 3.11 이상이면 도우미를 CLI로도 사용할 수 있습니다.
+
+```bash
+~/.codexusage/bin/codex-account
+~/.codexusage/bin/codex-account list
+~/.codexusage/bin/codex-account switch <이름>
+~/.codexusage/bin/codex-account add
+```
+
+**Disable Account Switching...**은 도우미를 제거합니다. `~/.codex-accounts`의
+저장된 로그인은 유지됩니다.
 
 ## 데이터와 동기화
 
@@ -78,7 +110,7 @@ account/rateLimits/read
 
 인증 토큰은 캐시에 저장하지 않으며, 이전 공용 캐시는 재사용하지 않습니다.
 API 키와 키체인에만 저장된 인증은 이 파일 기반 계정 추적에서 지원하지 않습니다.
-CodexUsage 자체는 인증 설정을 변경하지 않아요.
+사용량 추적만으로는 인증 설정을 변경하지 않아요.
 
 정책:
 
@@ -97,5 +129,6 @@ swift test
 python3 -m unittest discover -s Tests -p 'test_*.py'
 ```
 
-Python 테스트는 `swift test`로 빌드된 디버그 실행 파일과 가짜 app-server를 사용합니다.
+Python 테스트는 Python 3.11 이상이 필요하며, `swift test`로 빌드된 디버그 실행 파일과
+가짜 app-server, 가짜 계정 로그인을 사용합니다.
 실제 인증 정보나 네트워크를 사용하지 않습니다.

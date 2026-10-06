@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+"""Small, local Codex account picker. No external dependencies."""
+import base64
+import curses
+import json
+import hashlib
+import tempfile
+import time
+import fcntl
+import os
+from pathlib import Path
+import re
+import shutil
+import selectors
+import subprocess
+import sys
+import uuid
+
+ROOT = Path.home() / '.codex-accounts'
+CURRENT = ROOT / 'current'
+APP = Path('/Applications/ChatGPT.app')
+
+
+def desktop_home():
+    return Path.home() / '.codex'
+
+
+def desktop_account():
+    marker = ROOT / '.desktop-account'
+    return canonical(marker.read_text().strip()) if marker.exists() else None
+
+
+def canonical(name):
+    if not re.fullmatch(r'[a-zA-Z0-9_-]+', name):
+        raise ValueError('계정 이름은 영문, 숫자, 밑줄, 하이픈만 가능합니다.')
+    aliases = ROOT / '.aliases.json'
+    mapping = json.loads(aliases.read_text()) if aliases.exists() else {}
+    seen = set()
+    while name in mapping:
+        if name in seen:
+            raise ValueError('계정 별칭에 순환이 있습니다.')
+        seen.add(name)
+        name = mapping[name]
+        if not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', name):
+            raise ValueError('계정 별칭이 올바르지 않습니다.')
+    return name
+
+
+def home(name):
+    name = canonical(name)
+    active = desktop_account()
+    if active is not None:
+        return desktop_home() if name == active else ROOT / name
+    return desktop_home() if name == '1' else ROOT / name
+
+
+def codex_binary():
+    # Skip this switcher's shim while retaining the user's active Node installation.
+    wrapper = Path(__file__).resolve()
+    paths = [entry for entry in os.get_exec_path()
+             if (Path(entry) / 'codex').resolve() != wrapper]
+    binary = shutil.which('codex', path=os.pathsep.join(paths))
+    if not binary:
+        raise ValueError('Codex CLI를 찾을 수 없습니다.')
+    return binary
+
+
+def atomic_write(path, data):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+def validate_auth(raw):
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and (data.get('OPENAI_API_KEY') or
+                isinstance(data.get('tokens'), dict) and data['tokens'].get('access_token')):
+            return data
+    except (ValueError, TypeError):
+        pass
+    raise ValueError('유효한 로그인 저장을 확인하지 못했습니다. 기존 정보는 보존됩니다.')
+
+
+def identity(raw):
+    data = validate_auth(raw)
+    if data.get('OPENAI_API_KEY'):
+        return ('api', hashlib.sha256(data['OPENAI_API_KEY'].encode()).hexdigest())
+    tokens = data['tokens']
+    # Include the user as well as the workspace, which can be shared by users.
+    for key in ('id_token', 'access_token'):
+        try:
+            part = tokens[key].split('.')[1]
+            claims = json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+            subject = claims.get('sub') or claims.get('email')
+            if subject:
+                return ('chatgpt', subject, tokens.get('account_id'))
+        except (KeyError, ValueError, IndexError, TypeError, AttributeError):
+            pass
+    return None
+
+
+def backup(name):
+    path = home(name) / 'auth.json'
+    if not path.exists():
+        return
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    folder = ROOT / '.backups' / name
+    if not list(folder.glob('*-' + digest + '.json')):
+        atomic_write(folder / (str(time.time_ns()) + '-' + digest + '.json'), raw)
+
+
+def raw_accounts():
+    return ['1'] + sorted(p.name for p in ROOT.iterdir()
+                          if p.is_dir() and not p.is_symlink() and p.name != '1'
+                          and re.fullmatch(r'[a-zA-Z0-9_-]+', p.name))
+
+
+def auth_identity(path):
+    try:
+        return identity(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+
+
+def freshness(path):
+    data = json.loads(path.read_bytes())
+    # File-copy time must not make a stale token look newer than a refreshed one.
+    return (str(data.get('last_refresh') or ''), path.stat().st_mtime_ns)
+
+
+def archive_auth(name, raw):
+    validate_auth(raw)
+    folder = ROOT / '.backups' / canonical(name)
+    digest = hashlib.sha256(raw).hexdigest()
+    if not list(folder.glob('*-' + digest + '.json')):
+        atomic_write(folder / (str(time.time_ns()) + '-' + digest + '.json'), raw)
+    atomic_write(ROOT / canonical(name) / 'auth.json', raw)
+
+
+def newest_auth(name):
+    live = home(name) / 'auth.json'
+    saved = ROOT / canonical(name) / 'auth.json'
+    if (saved.exists() and live.exists() and
+            auth_identity(saved) == auth_identity(live) and freshness(saved) > freshness(live)):
+        return saved.read_bytes()
+    return live.read_bytes()
+
+
+def reconcile_desktop():
+    """Treat the app's live store as authoritative, including app-side logins."""
+    active = desktop_account()
+    path = desktop_home() / 'auth.json'
+    if active is None or not path.exists():
+        return
+    raw = path.read_bytes()
+    key = identity(raw)
+    if key is None:
+        raise ValueError('앱 인증의 계정 식별자를 확인할 수 없습니다. 인증 파일은 보존됩니다.')
+    candidates = [active] + [n for n in accounts() if n != active]
+    match = next((n for n in candidates
+                  if auth_identity(ROOT / n / 'auth.json') == key), None)
+    name = match or 'account-' + uuid.uuid4().hex[:12]
+    saved = ROOT / name / 'auth.json'
+    if not saved.exists() or auth_identity(saved) != key or freshness(path) >= freshness(saved):
+        archive_auth(name, raw)
+    atomic_write(ROOT / '.desktop-account', (name + '\n').encode())
+    save(name)
+
+
+def desktop_pids():
+    if not APP.exists():
+        return set()
+    result = subprocess.run(['/bin/ps', '-axo', 'pid=,comm='],
+                            capture_output=True, text=True, check=True)
+    executable = str(APP / 'Contents/MacOS/ChatGPT')
+    return {int(parts[0]) for line in result.stdout.splitlines()
+            if len(parts := line.strip().split(None, 1)) == 2 and parts[1] == executable}
+
+
+def desktop_backend_pids():
+    if not APP.exists():
+        return set()
+    result = subprocess.run(['/bin/ps', '-axo', 'pid=,comm='],
+                            capture_output=True, text=True, check=True)
+    executable = str(APP / 'Contents/Resources/codex')
+    return {int(parts[0]) for line in result.stdout.splitlines()
+            if len(parts := line.strip().split(None, 1)) == 2 and parts[1] == executable}
+
+
+def stop_desktop():
+    if not desktop_pids():
+        return False
+    print('ChatGPT 앱을 정상 종료한 뒤 계정을 전환합니다.', flush=True)
+    try:
+        subprocess.run(['/usr/bin/osascript', '-e',
+                        'tell application "/Applications/ChatGPT.app" to quit'],
+                       capture_output=True, check=True, timeout=30)
+    except (subprocess.SubprocessError, OSError) as error:
+        raise ValueError('ChatGPT 앱을 정상 종료하지 못했습니다. 계정을 변경하지 않았습니다.') from error
+    deadline = time.monotonic() + 15
+    while desktop_pids() or desktop_backend_pids():
+        if time.monotonic() >= deadline:
+            raise ValueError('ChatGPT 앱이 종료되지 않았습니다. 계정을 변경하지 않았습니다.')
+        time.sleep(0.2)
+    return True
+
+
+def start_desktop():
+    # LaunchServices opens the existing app and existing profile, with no overrides.
+    env = dict(os.environ)
+    for key in ('CODEX_HOME', 'CODEX_ELECTRON_USER_DATA_PATH'):
+        env.pop(key, None)
+    subprocess.run(['/usr/bin/open', '-a', str(APP)], env=env,
+                   capture_output=True, check=True, timeout=15)
+
+
+def file_store_config(raw):
+    """Change only the root credential-store setting, preserving other settings."""
+    import tomllib
+    text = raw.decode()
+    config = tomllib.loads(text)
+    if config.get('cli_auth_credentials_store') == 'file':
+        return raw
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith('['):
+            break
+        if re.match(r'^\s*(?:cli_auth_credentials_store|"cli_auth_credentials_store"|\'cli_auth_credentials_store\')\s*=', line):
+            lines[index] = 'cli_auth_credentials_store = "file"\n'
+            break
+    else:
+        index = len(lines)
+    result = ''.join(lines)
+    if tomllib.loads(result).get('cli_auth_credentials_store') != 'file':
+        result = 'cli_auth_credentials_store = "file"\n' + result
+    tomllib.loads(result)
+    return result.encode()
+
+
+def switch_desktop(name):
+    name = canonical(name)
+    with (ROOT / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if name not in accounts():
+            raise ValueError('등록되지 않은 계정입니다. codex-account add로 추가하세요.')
+        # Validate everything possible before interrupting the app.
+        target = home(name) / 'auth.json'
+        target_raw = newest_auth(name)
+        if identity(target_raw) is None:
+            raise ValueError('대상 계정의 인증 정보를 확인할 수 없습니다.')
+        live = desktop_home() / 'auth.json'
+        config_path = desktop_home() / 'config.toml'
+        config_raw = config_path.read_bytes() if config_path.exists() else b''
+        new_config = file_store_config(config_raw)
+        was_running = stop_desktop()
+        committed = False
+        originals = {}
+        try:
+            # App shutdown may flush refreshed credentials: read again now.
+            if desktop_account() is not None:
+                reconcile_desktop()
+            else:
+                if live.exists():
+                    archive_auth('1', live.read_bytes())
+            target = home(name) / 'auth.json'
+            target_raw = newest_auth(name)
+            if identity(target_raw) is None:
+                raise ValueError('대상 계정의 인증 정보를 확인할 수 없습니다.')
+            archive_auth(name, target_raw)
+            for path in (live, config_path, ROOT / '.desktop-account', CURRENT):
+                originals[path] = path.read_bytes() if path.exists() else None
+            if config_raw != new_config:
+                atomic_write(ROOT / '.backups' / 'desktop' /
+                             ('config-' + str(time.time_ns()) + '.toml'), config_raw)
+                atomic_write(config_path, new_config)
+            atomic_write(live, target_raw)
+            atomic_write(ROOT / '.desktop-account', (name + '\n').encode())
+            save(name)
+            binary = APP / 'Contents/Resources/codex'
+            if binary.exists():
+                actual = account_info(name, binary=str(binary), folder=desktop_home(), file_override=False)
+                if not account_matches(name, actual):
+                    raise ValueError('앱 내장 Codex의 계정 확인에 실패했습니다.')
+            committed = True
+        finally:
+            if not committed:
+                for path, raw in originals.items():
+                    if raw is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        atomic_write(path, raw)
+            if was_running:
+                try:
+                    start_desktop()
+                except (OSError, subprocess.SubprocessError) as error:
+                    raise ValueError('인증 저장 처리는 끝났지만 앱을 다시 열지 못했습니다. ChatGPT 앱을 직접 열어주세요.') from error
+    print(f'선택: {label(name)} | ChatGPT 앱과 새 codex 실행에 적용됩니다.')
+
+
+def initialize():
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (ROOT / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (ROOT / '.switcher-v2').exists():
+            legacy = Path.home() / '.codex' / 'auth.json'
+            copied = ROOT / '1' / 'auth.json'
+            # Undo the previous release's copied default-account credential store.
+            if copied.is_file():
+                raw = copied.read_bytes()
+                atomic_write(ROOT / '.backups' / 'migration' / '1-auth.json', raw)
+                copied_id = auth_identity(copied)
+                legacy_id = auth_identity(legacy)
+                if not legacy.exists() or (copied_id is not None and copied_id == legacy_id):
+                    if not legacy.exists() or freshness(copied) > freshness(legacy):
+                        if legacy.exists():
+                            backup('1')
+                        if not legacy.exists() or raw != legacy.read_bytes():
+                            atomic_write(legacy, raw)
+                else:
+                    # Distinct accounts are retained even if the old slot was called 1.
+                    name = 'account-' + uuid.uuid4().hex[:12]
+                    atomic_write(ROOT / name / 'auth.json', raw)
+            mapping = {}
+            known = {}
+            for name in raw_accounts():
+                path = home(name) / 'auth.json'
+                key = auth_identity(path)
+                if key is None:
+                    continue
+                if key not in known:
+                    known[key] = name
+                    continue
+                target = known[key]
+                target_path = home(target) / 'auth.json'
+                backup(name)
+                backup(target)
+                if freshness(path) > freshness(target_path):
+                    atomic_write(target_path, path.read_bytes())
+                mapping[name] = target
+            atomic_write(ROOT / '.aliases.json', json.dumps(mapping).encode())
+            atomic_write(ROOT / '.switcher-v2', b'2\n')
+        for name in accounts():
+            backup(name)
+        reconcile_desktop()
+        if CURRENT.exists():
+            save(current())
+
+
+def login(name, args, new=False):
+    binary = codex_binary()
+    with tempfile.TemporaryDirectory(prefix='.login-', dir=ROOT) as temp:
+        staging = Path(temp)
+        config = home(name) / 'config.toml'
+        if config.is_file():
+            atomic_write(staging / 'config.toml', config.read_bytes())
+        message = ('표시되는 주소에서 코드를 입력해 계정을 등록하세요. 기존 로그인은 보존돼요.'
+                   if '--device-auth' in args else
+                   '브라우저에서 사용할 계정으로 로그인하세요. 기존 로그인은 보존돼요.')
+        print(message, flush=True)
+        result = subprocess.run(
+            [binary, *args, '-c', 'cli_auth_credentials_store="file"'],
+            env=dict(os.environ, CODEX_HOME=str(staging)))
+        if result.returncode:
+            raise SystemExit(result.returncode)
+        auth = staging / 'auth.json'
+        if not auth.is_file():
+            raise ValueError('로그인 저장을 확인하지 못했습니다. 기존 정보는 보존됩니다.')
+        raw = auth.read_bytes()
+        validate_auth(raw)
+        with (ROOT / '.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if new and home(name).exists():
+                raise ValueError('이미 있는 계정입니다. 기존 정보는 보존됩니다.')
+            incoming = identity(raw)
+            if incoming is not None:
+                for existing in accounts():
+                    candidate = home(existing) / 'auth.json'
+                    if not candidate.is_file():
+                        continue
+                    try:
+                        matches = identity(candidate.read_bytes()) == incoming
+                    except ValueError:
+                        matches = False
+                    if matches:
+                        name = existing
+                        break
+            old = home(name) / 'auth.json'
+            if old.exists():
+                old_raw = old.read_bytes()
+                try:
+                    same = identity(raw) is not None and identity(raw) == identity(old_raw)
+                except ValueError:
+                    same = False
+                if not same:
+                    name = 'account-' + uuid.uuid4().hex[:12]
+                    print('다른 계정으로 로그인하여 별도 계정으로 등록합니다.')
+            backup(name)
+            destination = ROOT / name if desktop_account() is not None else home(name)
+            atomic_write(destination / 'auth.json', raw)
+            backup(name)
+        print(f'로그인 저장 완료: {label(name)}')
+        switch_desktop(name)
+
+
+def restore(name):
+    home(name)  # Validate before constructing backup paths.
+    with (ROOT / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if (home(name) / 'auth.json').exists():
+            raise ValueError('현재 로그인 파일이 있어 복원으로 덮어쓰지 않습니다.')
+        for path in sorted((ROOT / '.backups' / name).glob('*.json'), reverse=True):
+            raw = path.read_bytes()
+            try:
+                validate_auth(raw)
+            except ValueError:
+                continue
+            atomic_write(home(name) / 'auth.json', raw)
+            print('로그인 파일을 복원했습니다. 만료되거나 취소된 인증은 다시 로그인해야 해요.')
+            return
+        raise ValueError('복원할 백업이 없습니다. 다시 로그인해주세요.')
+
+
+def accounts():
+    names = list(dict.fromkeys(canonical(name) for name in raw_accounts()))
+    try:
+        order = json.loads((ROOT / '.order.json').read_text())
+    except (OSError, ValueError):
+        return names
+    if not isinstance(order, list):
+        return names
+    ordered = []
+    for name in order:
+        try:
+            name = canonical(name) if isinstance(name, str) else None
+        except ValueError:
+            continue
+        if name in names and name not in ordered:
+            ordered.append(name)
+    return ordered + [name for name in names if name not in ordered]
+
+
+def move_account(name, offset):
+    """Persist a single move without changing the selected login."""
+    with (ROOT / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        names = accounts()
+        if name not in names:
+            return names
+        index = names.index(name)
+        target = index + offset
+        if 0 <= target < len(names):
+            names[index], names[target] = names[target], names[index]
+            atomic_write(ROOT / '.order.json',
+                         (json.dumps(names) + '\n').encode())
+        return names
+
+
+def email(name):
+    try:
+        data = json.loads((home(name) / 'auth.json').read_text())
+        for key in ('id_token', 'access_token'):
+            token = data.get('tokens', {}).get(key, '')
+            try:
+                part = token.split('.')[1]
+                claims = json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+                value = claims.get('email') or claims.get('https://api.openai.com/profile', {}).get('email')
+                if isinstance(value, str) and value:
+                    return ''.join(c for c in value if c.isprintable())
+            except (ValueError, IndexError, TypeError, AttributeError):
+                pass
+        return 'API 키' if data.get('OPENAI_API_KEY') else '이메일 정보 없음'
+    except (OSError, ValueError, TypeError, AttributeError):
+        return '로그인 정보 없음'
+
+
+def current():
+    name = canonical(CURRENT.read_text().strip()) if CURRENT.exists() else '1'
+    return name if name in accounts() else '1'
+
+
+def save(name):
+    atomic_write(CURRENT, (canonical(name) + '\n').encode())
+
+
+def label(name):
+    value = email(name)
+    return value if '@' in value else f'{name} | {value}'
+
+
+def picker():
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise ValueError('터미널에서 실행하세요. 목록 조회: codex-account list')
+    names = accounts()
+    active = current()
+    label_cache = {n: label(n) for n in names}
+    def draw(screen):
+        nonlocal names
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        screen.keypad(True)
+        index = names.index(active)
+        while True:
+            labels = [label_cache.setdefault(n, n) + (' 🟢' if n == active else '')
+                      for n in names] + ['+ 계정 추가']
+            screen.erase()
+            height, width = screen.getmaxyx()
+            if height < 4 or width < 20:
+                raise ValueError('터미널 창을 조금 키워주세요.')
+            screen.addnstr(0, 0, '계정 전환: ↑↓ Enter | 취소: q', width - 1)
+            screen.addnstr(height - 1, 0, '순서: K/J (Shift+↑↓) | 즉시 저장', width - 1)
+            start = max(0, index - (height - 4))
+            for row, pos in enumerate(range(start, min(len(labels), start + height - 3)), 1):
+                screen.addnstr(row, 0, ('> ' if pos == index else '  ') + labels[pos],
+                               width - 1, curses.A_REVERSE if pos == index else 0)
+            screen.refresh()
+            key = screen.getch()
+            if key in (curses.KEY_UP, ord('k')):
+                index = (index - 1) % len(labels)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                index = (index + 1) % len(labels)
+            elif key in (ord('K'), ord('J'), curses.KEY_SR, curses.KEY_SF):
+                if index < len(names):
+                    selected = names[index]
+                    offset = -1 if key in (ord('K'), curses.KEY_SR) else 1
+                    names = move_account(selected, offset)
+                    for name in names:
+                        if name not in label_cache:
+                            label_cache[name] = label(name)
+                    index = names.index(selected) if selected in names else 0
+            elif key in (10, 13, curses.KEY_ENTER):
+                return names[index] if index < len(names) else None
+            elif key in (27, ord('q')):
+                raise KeyboardInterrupt
+    return curses.wrapper(draw)
+
+
+def launch(name, args):
+    if args and args[0] == 'login' and not any(a in ('status', 'help', '-h', '--help') for a in args[1:]):
+        login(name, args)
+        return
+    binary = codex_binary()
+    backup(name)
+    folder = home(name)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.environ['CODEX_HOME'] = str(folder)
+    options = ['-c', 'cli_auth_credentials_store="file"']
+    os.execv(binary, [binary, *options, *args])
+
+
+def account_info(name, *, binary=None, folder=None, file_override=True):
+    """Read the account through the real CLI, without logging in or refreshing it."""
+    process = subprocess.Popen(
+        [binary or codex_binary(), *(['-c', 'cli_auth_credentials_store="file"'] if file_override else []), 'app-server'],
+        env=dict(os.environ, CODEX_HOME=str(folder or home(name))),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        requests = [
+            {'id': 1, 'method': 'initialize', 'params': {
+                'clientInfo': {'name': 'codex-account-status', 'version': '1'}}},
+            {'method': 'initialized'},
+            {'id': 2, 'method': 'account/read', 'params': {'refreshToken': False}},
+        ]
+        process.stdin.write(b''.join((json.dumps(r) + '\n').encode() for r in requests))
+        process.stdin.flush()
+        deadline = time.monotonic() + 10
+        pending = b''
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                if not selector.select(max(0, deadline - time.monotonic())):
+                    break
+                chunk = os.read(process.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                pending += chunk
+                while b'\n' in pending:
+                    line, pending = pending.split(b'\n', 1)
+                    message = json.loads(line)
+                    if message.get('id') != 2:
+                        continue
+                    if 'error' in message:
+                        raise ValueError('Codex에서 계정을 조회하지 못했습니다.')
+                    return message.get('result', {}).get('account')
+        raise ValueError('Codex 계정 조회 응답을 받지 못했습니다.')
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        process.stdin.close()
+        process.stdout.close()
+
+
+def account_matches(name, actual):
+    if not actual:
+        return False
+    data = json.loads((home(name) / 'auth.json').read_bytes())
+    if data.get('OPENAI_API_KEY'):
+        return actual.get('type') == 'apiKey'
+    if actual.get('email') != email(name):
+        return False
+    workspace = actual.get('chatgptAccountId')
+    return workspace is None or workspace == data.get('tokens', {}).get('account_id')
+
+
+def status():
+    name = current()
+    actual = account_info(name)
+    print(f'선택한 계정: {label(name)}')
+    if not actual:
+        raise ValueError('실제 Codex: 로그인되어 있지 않습니다.')
+    actual_email = actual.get('email')
+    if actual_email:
+        actual_email = ''.join(c for c in actual_email if c.isprintable())
+        print(f'실제 Codex 계정: {actual_email}')
+        if actual_email != email(name):
+            raise ValueError('선택한 계정과 실제 Codex 계정이 다릅니다.')
+    elif actual.get('type') == 'apiKey':
+        print('실제 Codex 계정: API 키')
+    else:
+        raise ValueError('실제 Codex의 계정 정보를 확인할 수 없습니다.')
+    if desktop_account() is not None:
+        binary = APP / 'Contents/Resources/codex'
+        if binary.exists():
+            actual = account_info(name, binary=str(binary), folder=desktop_home(), file_override=False)
+            if not account_matches(name, actual):
+                raise ValueError('ChatGPT 앱의 기본 인증과 선택 계정이 다릅니다.')
+        print('🟢 ChatGPT 기본 인증 저장소와 새 CLI 실행 계정이 일치합니다.')
+        print('저장소 검증이며 실행 중인 앱 화면이나 서버 인증 유효성 검증은 아닙니다.')
+    else:
+        print('앱 동기화 전입니다. codex-account에서 계정을 선택하면 적용됩니다.')
+
+
+def add(name=None):
+    # The directory identifier is internal; users identify accounts by email.
+    name = name or 'account-' + uuid.uuid4().hex[:12]
+    folder = home(name)
+    if name in accounts() or folder.exists():
+        raise ValueError('이미 있는 계정입니다. 로그인: codex-account ' + name + ' login')
+    login(name, ['login', '--device-auth'], new=True)
+    print('선택한 계정으로 codex 명령을 사용하세요.')
+
+
+def main():
+    os.umask(0o077)
+    initialize()
+    args = sys.argv[1:]
+    alias = Path(sys.argv[0]).name
+    if alias == 'codex':
+        launch(current(), args)
+        return
+    if alias in ('codex1', 'codex2'):
+        launch(alias[-1], args)
+        return
+    command = args[0] if args else 'select'
+    if command in ('-h', '--help'):
+        print('codex-account          사용할 계정 선택 (↑↓ Enter, 순서 변경: K/J 또는 Shift+↑↓)\n'
+              'codex-account list     계정과 이메일 조회 (--json)\n'
+              'codex-account status   실제 Codex 적용 계정 확인\n'
+              'codex-account add      로그인 후 이메일로 자동 등록\n'
+              'codex-account switch 이름  사용할 계정 전환\n'
+              'codex-account run      마지막 선택 계정 실행\n'
+              'codex-account restore 이름  사라진 로그인 파일을 백업에서 복원\n'
+              'codex-account 이름 ... 특정 계정으로 Codex 실행')
+    elif command == 'list':
+        active = current()
+        if '--json' in args[1:]:
+            print(json.dumps([{'name': name, 'label': label(name), 'current': name == active,
+                               'auth': str(home(name) / 'auth.json')} for name in accounts()]))
+            return
+        for name in accounts():
+            print(label(name) + (' 🟢' if name == active else ''))
+    elif command == 'status':
+        status()
+    elif command == 'restore':
+        restore(args[1] if len(args) > 1 else current())
+    elif command == 'add':
+        add(args[1] if len(args) > 1 else None)
+    elif command in ('select', 'switch'):
+        name = canonical(args[1]) if command == 'switch' and len(args) > 1 else picker()
+        if name is None:
+            add()
+        else:
+            if name not in accounts():
+                raise ValueError('등록되지 않은 계정입니다. codex-account add로 추가하세요.')
+            switch_desktop(name)
+    elif command == 'run':
+        launch(current(), args[1:])
+    else:
+        launch(command, args[1:])
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (KeyboardInterrupt, EOFError):
+        sys.exit(130)
+    except (ValueError, OSError, curses.error) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(2)

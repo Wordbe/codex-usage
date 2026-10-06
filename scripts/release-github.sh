@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-}"
 
 if [[ -z "${VERSION}" ]]; then
-  echo "Usage: scripts/release-github.sh v0.1.3"
+  echo "Usage: scripts/release-github.sh v0.2.0"
   exit 2
 fi
 
@@ -33,15 +33,13 @@ NOTES_FILE="${ROOT_DIR}/dist/release-notes-${VERSION}.md"
 cat > "${NOTES_FILE}" <<EOF
 # CodexUsage ${VERSION}
 
-- macOS menu bar Codex 5-hour usage meter.
-- Prefer Codex /status session rate-limit events and fall back to Codex app-server data.
-- Avoids showing stale cached usage as a current menu bar percentage.
-- Repairs the ~/.codexusage/bin/codexusage helper link if it points at a removed app translocation path.
-- Includes a custom CodexUsage app icon.
+- macOS menu bar Codex 5-hour usage meter, with weekly usage in the menu.
+- Reads usage from the Codex app-server for the account in ~/.codex/auth.json and keeps caches per account.
+- Optional account switching: choose "Enable Account Switching..." to switch saved Codex accounts from the menu (Python 3.11+).
 - Download CodexUsage.dmg, open it, read "READ BEFORE INSTALL - Open Anyway Guide.txt", then double-click "CodexUsage.app".
 - The app self-installs to ~/Applications on first launch from the DMG.
 - If macOS shows "CodexUsage" Not Opened, use System Settings > Privacy & Security > Open Anyway.
-- Does not edit Codex config.toml or the Codex status line.
+- Does not edit Codex config.toml or the Codex status line unless account switching is enabled.
 - Open source under the MIT License.
 - Unsigned DMG. See the included "READ BEFORE INSTALL - Open Anyway Guide.txt".
 EOF

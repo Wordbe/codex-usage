@@ -23,7 +23,7 @@ CodexUsage also:
 - Creates a login item.
 - Links the CLI at ~/.codexusage/bin/codexusage.
 
-CodexUsage does not edit your Codex config.toml or Codex status line.
+CodexUsage does not edit your Codex config.toml or Codex status line unless you enable account switching.
 
 Korean / 한국어
 ===============
@@ -48,4 +48,4 @@ CodexUsage가 추가로 하는 일:
 - 로그인 항목을 생성합니다.
 - CLI를 ~/.codexusage/bin/codexusage에 연결합니다.
 
-CodexUsage는 Codex config.toml 또는 Codex status line을 수정하지 않습니다.
+CodexUsage는 계정 전환을 켜지 않는 한 Codex config.toml 또는 Codex status line을 수정하지 않습니다.

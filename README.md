@@ -27,7 +27,7 @@ If macOS shows `"CodexUsage" Not Opened`, open **System Settings > Privacy & Sec
 
 On first launch from the DMG, CodexUsage copies itself to `~/Applications/CodexUsage.app`, starts the installed copy, creates a login item, and links the CLI at `~/.codexusage/bin/codexusage`.
 
-CodexUsage does not edit your Codex `config.toml` or Codex status line.
+CodexUsage does not edit your Codex `config.toml` or Codex status line unless you enable account switching.
 
 ## Open Source
 
@@ -40,6 +40,7 @@ The repository includes:
 - The SVG product icon at [docs/assets/codexusage-icon.svg](docs/assets/codexusage-icon.svg).
 - English and Korean installation docs.
 - Self-installing app launch from the DMG.
+- The optional `codex-account` helper at [tools/codex-account](tools/codex-account).
 
 Issues and pull requests are welcome at [Wordbe/codex-usage](https://github.com/Wordbe/codex-usage).
 
@@ -49,10 +50,10 @@ Security issues should be reported privately. See [SECURITY.md](SECURITY.md).
 
 ```bash
 swift build -c release
-scripts/build-dmg.sh 0.1.4
+scripts/build-dmg.sh 0.2.0
 ```
 
-The DMG is written to `dist/CodexUsage-0.1.4.dmg`.
+The DMG is written to `dist/CodexUsage-0.2.0.dmg`.
 
 ## CLI
 
@@ -68,6 +69,38 @@ If the GUI app cannot find Codex, set:
 ```bash
 export CODEXUSAGE_CODEX_PATH="$(command -v codex)"
 ```
+
+## Account Switching (Optional)
+
+Account switching is off by default. Choose **Enable Account Switching...** in the
+menu to install the bundled `codex-account` helper at
+`~/.codexusage/bin/codex-account`. It needs Python 3.11 or later
+(for example `brew install python`); set `CODEXUSAGE_PYTHON` to pick one.
+
+Once enabled, the menu lists your saved accounts with their last seen 5-hour and
+weekly usage. Click an account to switch:
+
+1. The helper quits the ChatGPT app. macOS asks once to let CodexUsage control ChatGPT.
+2. It saves the current login and writes the selected one to `~/.codex/auth.json`.
+3. It verifies the account with ChatGPT's bundled Codex, rolls back on failure, and reopens ChatGPT.
+
+**Add Account...** opens Terminal and runs `codex-account add` (device-code login).
+Logins and backups are kept in `~/.codex-accounts` with owner-only permissions.
+They contain credentials, so do not share them. Switching sets
+`cli_auth_credentials_store = "file"` in `~/.codex/config.toml` and backs up the
+previous file.
+
+The helper also works as a CLI when `python3` on your PATH is 3.11 or later:
+
+```bash
+~/.codexusage/bin/codex-account
+~/.codexusage/bin/codex-account list
+~/.codexusage/bin/codex-account switch <name>
+~/.codexusage/bin/codex-account add
+```
+
+**Disable Account Switching...** removes the helper. Saved logins in
+`~/.codex-accounts` are kept.
 
 ## Usage Source And Sync
 
@@ -96,7 +129,7 @@ Cache files are isolated by a hash of the user and workspace identity:
 
 Tokens are never written to the usage cache. Old unscoped caches are not reused.
 API-key and keychain-only authentication are not supported by this file-based
-account tracking. CodexUsage does not change your authentication settings.
+account tracking. Usage tracking alone does not change your authentication settings.
 
 Policy:
 
@@ -118,13 +151,13 @@ swift test
 python3 -m unittest discover -s Tests -p 'test_*.py'
 ```
 
-The Python tests use the debug binary built by `swift test` and a local fake
-app-server. They do not use real credentials or make network requests.
+The Python tests need Python 3.11 or later. They use the debug binary built by
+`swift test`, a local fake app-server, and fake account logins. They do not use real credentials or make network requests.
 
 ## GitHub Release
 
 After this directory is a GitHub repository with an `origin` remote:
 
 ```bash
-scripts/release-github.sh v0.1.4
+scripts/release-github.sh v0.2.0
 ```

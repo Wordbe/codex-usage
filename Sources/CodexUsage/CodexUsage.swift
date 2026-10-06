@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 
-let appVersion = "0.1.4"
+let appVersion = "0.2.0"
 let usageCacheMaxAge: TimeInterval = 30
 let usageSyncInterval: TimeInterval = 60
 let usageMenuDisplayMaxAge: TimeInterval = usageSyncInterval * 2 + usageCacheMaxAge
@@ -429,70 +429,62 @@ func findCodexExecutable() -> String? {
 }
 
 func isUsableCodexExecutable(_ path: String) -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: path)
-    process.arguments = ["--version"]
-    process.environment = mergedEnvironment()
-
-    let output = Pipe()
-    let error = Pipe()
-    process.standardOutput = output
-    process.standardError = error
-
-    do {
-        try process.run()
-    } catch {
-        return false
-    }
-
-    let semaphore = DispatchSemaphore(value: 0)
-    DispatchQueue.global(qos: .utility).async {
-        process.waitUntilExit()
-        semaphore.signal()
-    }
-    if semaphore.wait(timeout: .now() + 4) == .timedOut {
-        if process.isRunning {
-            process.terminate()
-        }
-        return false
-    }
-
-    let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    let stderr = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    return process.terminationStatus == 0 && (stdout + stderr).contains("codex-cli")
+    guard let result = runCommand(path, args: ["--version"], timeout: 4) else { return false }
+    return result.status == 0 && (result.stdout + result.stderr).contains("codex-cli")
 }
 
-func runSmallCommand(_ executable: String, args: [String], timeout: TimeInterval) -> String? {
+struct CommandResult {
+    let status: Int32
+    let stdout: String
+    let stderr: String
+}
+
+private final class PipeReader: @unchecked Sendable {
+    private let done = DispatchSemaphore(value: 0)
+    private var data = Data()
+
+    init(_ handle: FileHandle) {
+        DispatchQueue.global(qos: .utility).async {
+            self.data = handle.readDataToEndOfFile()
+            self.done.signal()
+        }
+    }
+
+    /// A grandchild that inherited the pipe must not block the caller.
+    func text() -> String {
+        done.wait(timeout: .now() + 2) == .success ? String(decoding: data, as: UTF8.self) : ""
+    }
+}
+
+/// Returns nil if the command cannot start or exceeds the timeout.
+func runCommand(_ executable: String, args: [String], timeout: TimeInterval) -> CommandResult? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = args
     process.environment = mergedEnvironment()
-
-    let output = Pipe()
-    process.standardOutput = output
-    process.standardError = Pipe()
+    process.standardInput = FileHandle.nullDevice
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+    let exited = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in exited.signal() }
 
     do {
         try process.run()
     } catch {
         return nil
     }
+    let stdout = PipeReader(stdoutPipe.fileHandleForReading)
+    let stderr = PipeReader(stderrPipe.fileHandleForReading)
 
-    let semaphore = DispatchSemaphore(value: 0)
-    DispatchQueue.global(qos: .utility).async {
-        process.waitUntilExit()
-        semaphore.signal()
-    }
-    if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-        if process.isRunning {
-            process.terminate()
-        }
+    if exited.wait(timeout: .now() + timeout) == .timedOut {
+        // SIGINT lets the Python helper unwind instead of dying mid-write.
+        process.interrupt()
+        if exited.wait(timeout: .now() + 5) == .timedOut { process.terminate() }
         return nil
     }
-
-    let data = output.fileHandleForReading.readDataToEndOfFile()
-    return String(data: data, encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return CommandResult(status: process.terminationStatus, stdout: stdout.text(), stderr: stderr.text())
 }
 
 func renderTerminalBar(_ percent: Double, width: Int = 12) -> String {
@@ -915,6 +907,13 @@ final class MenuBarController: NSObject {
     private var latestRead: UsageRead?
     private var latestError: String?
     private var isRefreshing = false
+    private let accountSwitcher = AccountSwitcher()
+    private let switcherQueue = DispatchQueue(label: "com.ree.codexusage.account-switcher")
+    private var switchableAccounts: [SwitchableAccount] = []
+    private var accountListError: String?
+    private var switchingLabel: String?
+    private let fetches = DispatchGroup()
+    private var refreshDeferred = false
 
     func start() {
         observedAccountKey = try? AccountContext.current().key
@@ -926,6 +925,7 @@ final class MenuBarController: NSObject {
         rebuildMenu()
         installLaunchAgentIfAppropriate()
         installCLIHelperIfAppropriate()
+        reloadAccounts()
         if let cached = usageService.cached(maxAge: usageCacheMaxAge) {
             latestSnapshot = cached.snapshot
             latestRead = cached
@@ -939,15 +939,20 @@ final class MenuBarController: NSObject {
             }
         }
         accountTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async { self?.checkAccount() }
+            DispatchQueue.main.async { self?.pollAccount() }
         }
         if let accountTimer { RunLoop.main.add(accountTimer, forMode: .common) }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
 
-    private func checkAccount() {
+    private func pollAccount() {
+        if !checkAccount(), refreshDeferred { refresh(forceRefresh: true) }
+    }
+
+    @discardableResult
+    private func checkAccount() -> Bool {
         let key = try? AccountContext.current().key
-        guard key != observedAccountKey else { return }
+        guard key != observedAccountKey else { return false }
         observedAccountKey = key
         generation += 1
         isRefreshing = false
@@ -956,7 +961,9 @@ final class MenuBarController: NSObject {
         latestError = nil
         updateTitle()
         rebuildMenu()
+        if switchingLabel == nil { reloadAccounts() }
         refresh(forceRefresh: true)
+        return true
     }
 
     @objc func refreshNow() {
@@ -965,6 +972,12 @@ final class MenuBarController: NSObject {
 
     private func refresh(forceRefresh: Bool) {
         guard !isRefreshing else { return }
+        // A switch waits for ChatGPT's bundled Codex processes, including our fetches, to exit.
+        guard switchingLabel == nil, !accountStoreIsBusy() else {
+            refreshDeferred = true
+            return
+        }
+        refreshDeferred = false
         isRefreshing = true
         if latestSnapshot == nil {
             applyMenuBarDisplay(percent: nil, title: "...", tooltip: "Codex 5h usage is loading", markerProgress: nil)
@@ -972,7 +985,10 @@ final class MenuBarController: NSObject {
 
         let usageService = self.usageService
         let requestGeneration = generation
+        let fetches = self.fetches
+        fetches.enter()
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            defer { fetches.leave() }
             do {
                 let read = try usageService.read(forceRefresh: forceRefresh)
                 DispatchQueue.main.async { [weak self] in
@@ -1010,7 +1026,9 @@ final class MenuBarController: NSObject {
     }
 
     private func updateTitle() {
-        if let snapshot = latestSnapshot {
+        if let switchingLabel {
+            applyMenuBarDisplay(percent: nil, title: "...", tooltip: "Switching Codex account to \(switchingLabel)", markerProgress: nil)
+        } else if let snapshot = latestSnapshot {
             guard snapshot.fiveHourWindow != nil else {
                 applyMenuBarDisplay(percent: nil, title: "--%", tooltip: "\(snapshot.account?.email ?? "ChatGPT"): 5h quota unavailable", markerProgress: nil)
                 return
@@ -1111,12 +1129,142 @@ final class MenuBarController: NSObject {
                 menu.addItem(infoItem(latestError))
             }
         }
+        if accountSwitcher.isInstalled {
+            menu.addItem(.separator())
+            addAccountItems(to: menu)
+        }
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r"))
         menu.addItem(.separator())
+        if !accountSwitcher.isInstalled {
+            menu.addItem(actionItem(title: "Enable Account Switching...", action: #selector(enableAccountSwitching)))
+        } else if switchingLabel == nil {
+            menu.addItem(actionItem(title: "Disable Account Switching...", action: #selector(disableAccountSwitching)))
+        }
         menu.addItem(actionItem(title: "Open Install Guide", action: #selector(openGuide)))
         menu.addItem(actionItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
+    }
+
+    private func addAccountItems(to menu: NSMenu) {
+        if let switchingLabel {
+            menu.addItem(infoItem("Switching to \(switchingLabel)...", weight: .semibold))
+            return
+        }
+        menu.addItem(infoItem("Switch Account", weight: .semibold))
+        if let accountListError {
+            menu.addItem(infoItem(accountListError))
+        }
+        for account in switchableAccounts {
+            let cached = account.usageKey.flatMap { usageService.cache.load(context: AccountContext(key: $0, email: nil)) }
+            let summary = cached.flatMap { accountUsageSummary($0.snapshot) }
+            let item = actionItem(title: summary.map { "\(account.label)  (\($0))" } ?? account.label,
+                                  action: #selector(switchAccount(_:)))
+            item.representedObject = account.name
+            item.state = isActive(account) ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(actionItem(title: "Add Account...", action: #selector(addAccount)))
+    }
+
+    private func isActive(_ account: SwitchableAccount) -> Bool {
+        account.usageKey.map { $0 == observedAccountKey } ?? account.current
+    }
+
+    private func reloadAccounts() {
+        guard accountSwitcher.isInstalled else {
+            switchableAccounts = []
+            accountListError = nil
+            rebuildMenu()
+            return
+        }
+        runSwitcherTask({ [accountSwitcher] in
+            accountSwitcher.updateInstalledCopy()
+            return try accountSwitcher.listAccounts()
+        }) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let accounts):
+                self.switchableAccounts = accounts
+                self.accountListError = nil
+            case .failure(let error):
+                self.accountListError = String(describing: error)
+            }
+            self.rebuildMenu()
+        }
+    }
+
+    /// Serializes helper calls off the main thread; the helper also holds a file lock.
+    private func runSwitcherTask<T: Sendable>(_ work: @escaping @Sendable () throws -> T,
+                                              completion: @escaping @MainActor @Sendable (Result<T, Error>) -> Void) {
+        switcherQueue.async {
+            let result = Result { try work() }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    @objc private func switchAccount(_ sender: NSMenuItem) {
+        guard switchingLabel == nil, let name = sender.representedObject as? String,
+              let account = switchableAccounts.first(where: { $0.name == name }), !isActive(account) else { return }
+        switchingLabel = account.label
+        updateTitle()
+        rebuildMenu()
+        runSwitcherTask({ [accountSwitcher, fetches] in
+            fetches.wait()
+            try accountSwitcher.switchAccount(to: name)
+        }) { [weak self] result in
+            guard let self else { return }
+            self.switchingLabel = nil
+            if !self.checkAccount() {
+                self.updateTitle()
+                self.reloadAccounts()
+                self.refresh(forceRefresh: true)
+            }
+            if case .failure(let error) = result {
+                self.showAlertLater(title: "Account Switch Failed", error: error)
+            }
+        }
+    }
+
+    @objc private func addAccount() {
+        runSwitcherTask({ [accountSwitcher] in try accountSwitcher.addAccountCommand() }) { [weak self] result in
+            switch result {
+            case .success(let url):
+                NSWorkspace.shared.open(url)
+            case .failure(let error):
+                self?.showAlertLater(title: "Add Account Failed", error: error)
+            }
+        }
+    }
+
+    @objc private func enableAccountSwitching() {
+        let message = """
+        Installs the codex-account helper at ~/.codexusage/bin/codex-account and saves logins in ~/.codex-accounts.
+
+        Switching quits and reopens the ChatGPT app and sets cli_auth_credentials_store = "file" in ~/.codex/config.toml.
+
+        Requires Python 3.11 or later.
+        """
+        guard showAlert(title: "Enable Account Switching?", message: message, confirmButton: "Enable") else { return }
+        runSwitcherTask({ [accountSwitcher] in try accountSwitcher.install() }) { [weak self] result in
+            guard let self else { return }
+            self.reloadAccounts()
+            if case .failure(let error) = result {
+                self.showAlertLater(title: "Account Switching Not Enabled", error: error)
+            }
+        }
+    }
+
+    @objc private func disableAccountSwitching() {
+        let message = "Removes ~/.codexusage/bin/codex-account. Saved logins in ~/.codex-accounts are kept."
+        guard showAlert(title: "Disable Account Switching?", message: message, confirmButton: "Disable") else { return }
+        runSwitcherTask({ [accountSwitcher] in try accountSwitcher.uninstall() }) { [weak self] result in
+            guard let self else { return }
+            self.reloadAccounts()
+            if case .failure(let error) = result {
+                self.showAlertLater(title: "Account Switching Not Disabled", error: error)
+            }
+        }
     }
 
     private func infoItem(_ title: String, weight: NSFont.Weight = .regular) -> NSMenuItem {
@@ -1158,13 +1306,25 @@ final class MenuBarController: NSObject {
         NSApplication.shared.terminate(nil)
     }
 
-    private func showAlert(title: String, message: String) {
+    /// A modal started inside a main-queue block would stall later main-queue work until dismissed.
+    private func showAlertLater(title: String, error: Error) {
+        perform(#selector(showQueuedAlert(_:)), with: [title, String(describing: error)], afterDelay: 0)
+    }
+
+    @objc private func showQueuedAlert(_ parts: [String]) {
+        showAlert(title: parts[0], message: parts[1])
+    }
+
+    @discardableResult
+    private func showAlert(title: String, message: String, confirmButton: String? = nil) -> Bool {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        alert.addButton(withTitle: confirmButton ?? "OK")
+        if confirmButton != nil { alert.addButton(withTitle: "Cancel") }
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }
 
@@ -1257,7 +1417,7 @@ func installAppFromDiskImage(sourceURL: URL) throws -> URL {
         }
 
         try fm.copyItem(at: sourceURL, to: targetURL)
-        _ = runSmallCommand("/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", targetURL.path], timeout: 5)
+        _ = runCommand("/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", targetURL.path], timeout: 5)
         return targetURL
     } catch {
         throw SelfInstallError.install(error.localizedDescription)

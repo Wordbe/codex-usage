@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-0.1.4}"
+VERSION="${1:-0.2.0}"
 APP_NAME="CodexUsage"
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 BUILD_DIR="${ROOT_DIR}/.build/release"
@@ -63,11 +63,14 @@ cat > "${APP_DIR}/Contents/Info.plist" <<EOF
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>CodexUsage quits and reopens ChatGPT when you switch Codex accounts.</string>
 </dict>
 </plist>
 EOF
 
 cp "${ROOT_DIR}/docs/OPEN_ANYWAY_GUIDE.txt" "${APP_DIR}/Contents/Resources/READ BEFORE INSTALL - Open Anyway Guide.txt"
+cp "${ROOT_DIR}/tools/codex-account" "${APP_DIR}/Contents/Resources/codex-account"
 
 codesign --force --deep --sign - "${APP_DIR}"
 
